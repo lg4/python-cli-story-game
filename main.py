@@ -28,14 +28,18 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
 import random
 import sys
 import textwrap
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Callable, TextIO
+from typing import Callable, TextIO, Any
 
 # ──────────────────────────────────────────────────────────────────────
 # Optional colour support  (pip install colorama)
@@ -57,6 +61,42 @@ except ImportError:
 # ──────────────────────────────────────────────────────────────────────
 TEST_MODE: bool = False        # when True, skip delays & read from input queue
 SLOW_PRINT_DELAY: float = 0.02  # character delay for theatrical prints
+LOGGING_ENABLED: bool = True    # when True, writes gameplay logs to disk
+
+# ──────────────────────────────────────────────────────────────────────
+# Auto-tuning system (learns from logs)
+# ──────────────────────────────────────────────────────────────────────
+TUNING_CONFIG: dict[str, Any] = {}
+TUNING_LOADED: bool = False
+
+
+def load_tuning_config() -> dict[str, Any]:
+    """Load automatic tuning adjustments from game_tuning.json if it exists."""
+    global TUNING_CONFIG, TUNING_LOADED
+    if TUNING_LOADED:
+        return TUNING_CONFIG
+    
+    tuning_file = Path("game_tuning.json")
+    if tuning_file.exists():
+        try:
+            with open(tuning_file, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                TUNING_CONFIG = config.get("adjustments", {})
+                if TUNING_CONFIG and not TEST_MODE:
+                    print(f"{Fore.CYAN}[Auto-tuning enabled: {len(TUNING_CONFIG)} adjustments loaded]{Style.RESET_ALL}")
+        except Exception:
+            pass
+    
+    TUNING_LOADED = True
+    return TUNING_CONFIG
+
+
+def get_tuned_value(param_name: str, default: float) -> float:
+    """Get a parameter value, applying tuning adjustment if available."""
+    if param_name in TUNING_CONFIG:
+        return default * TUNING_CONFIG[param_name]
+    return default
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Utility helpers
@@ -93,6 +133,40 @@ def hr(char: str = "─") -> None:
     print(char * WIDTH)
 
 
+# ──────────────────────────────────────────────────────────────────────
+# ASCII Art colorization helpers
+# ──────────────────────────────────────────────────────────────────────
+def colorize_ascii(text: str, color: str) -> str:
+    """Apply a single color to ASCII art."""
+    if not HAS_COLOR or not text:
+        return text
+    return f"{color}{text}{Style.RESET_ALL}"
+
+
+def colorize_ascii_gradient(text: str, colors: list[str]) -> str:
+    """Apply gradient of colors to ASCII art (cycling through colors per line)."""
+    if not HAS_COLOR or not text or not colors:
+        return text
+    lines = text.split('\n')
+    colored_lines = []
+    for i, line in enumerate(lines):
+        color = colors[i % len(colors)]
+        colored_lines.append(f"{color}{line}{Style.RESET_ALL}")
+    return '\n'.join(colored_lines)
+
+
+def get_theme_ascii_color(theme_id: ThemeId) -> str:
+    """Get the appropriate color for a theme's ASCII art."""
+    color_map = {
+        ThemeId.DESERT: Fore.YELLOW,      # Sand/sun
+        ThemeId.SPACE: Fore.CYAN,         # Sci-fi glow
+        ThemeId.MIST: Fore.MAGENTA,       # Mystical purple
+        ThemeId.TIME: Fore.WHITE,         # Glitchy white
+        ThemeId.CYBER: Fore.GREEN,        # Hacker aesthetic
+    }
+    return color_map.get(theme_id, Fore.WHITE)
+
+
 def wrapped(text: str) -> str:
     return textwrap.fill(text, width=WIDTH)
 
@@ -122,6 +196,172 @@ def pause(seconds: float = 1.0) -> None:
     """Sleep unless in test mode."""
     if not TEST_MODE:
         time.sleep(seconds)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Logging System
+# ──────────────────────────────────────────────────────────────────────
+class GameLogger:
+    """Comprehensive gameplay logger for analytics and improvement."""
+
+    def __init__(self, log_dir: Path = Path("logs"), session_id: str | None = None):
+        self.log_dir = log_dir
+        self.log_dir.mkdir(exist_ok=True)
+        self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_file = self.log_dir / f"game_{self.session_id}.jsonl"
+        self.events: list[dict[str, Any]] = []
+        self.start_time = time.time()
+
+        # Initialize session metadata
+        self.log_event("session_start", {
+            "timestamp": datetime.now().isoformat(),
+            "test_mode": TEST_MODE,
+        })
+
+    def log_event(self, event_type: str, data: dict[str, Any]) -> None:
+        """Log a single event with timestamp."""
+        if not LOGGING_ENABLED:
+            return
+
+        event = {
+            "timestamp": datetime.now().isoformat(),
+            "elapsed": round(time.time() - self.start_time, 2),
+            "type": event_type,
+            **data,
+        }
+        self.events.append(event)
+
+        # Write to file immediately (JSONL format)
+        try:
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(event) + "\n")
+        except Exception:
+            pass  # Don't crash game on logging errors
+
+    def log_player_state(self, player: 'Player', label: str = "state") -> None:
+        """Log full player state snapshot."""
+        self.log_event(f"player_{label}", {
+            "name": player.name,
+            "theme": player.theme.name,
+            "difficulty": player.difficulty.value,
+            "day": player.days,
+            "distance": player.distance_travelled,
+            "health": player.health,
+            "morale": player.morale,
+            "supplies": dict(player.supplies),
+            "inventory_count": len(player.inventory),
+            "inventory": player.inventory[:],
+            "companion": player.companion.name if player.companion else None,
+            "effects": {e.value: d for e, d in player.status_effects.items()},
+            "achievements": sum(1 for a in player.achievements.values() if a.unlocked),
+            "time_of_day": player.time_of_day.value,
+            "weather": player.weather.value,
+        })
+
+    def log_choice(self, prompt: str, choice: str, context: dict[str, Any] | None = None) -> None:
+        """Log a player decision."""
+        self.log_event("choice", {
+            "prompt": prompt[:100],  # truncate long prompts
+            "choice": choice,
+            "context": context or {},
+        })
+
+    def log_event_trigger(self, event_name: str, outcome: str, details: dict[str, Any] | None = None) -> None:
+        """Log a random event and its outcome."""
+        self.log_event("random_event", {
+            "event": event_name,
+            "outcome": outcome,
+            "details": details or {},
+        })
+
+    def log_death(self, cause: str, player: 'Player') -> None:
+        """Log player death with full context."""
+        self.log_event("death", {
+            "cause": cause,
+            "day": player.days,
+            "distance": player.distance_travelled,
+            "distance_pct": int(player.distance_travelled / player.theme.total_distance * 100),
+            "health": player.health,
+            "food": player.supplies["food"],
+            "water": player.supplies["water"],
+            "fuel": player.supplies["fuel"],
+            "difficulty": player.difficulty.value,
+            "theme": player.theme.name,
+        })
+
+    def log_victory(self, ending_type: str, player: 'Player') -> None:
+        """Log successful completion."""
+        self.log_event("victory", {
+            "ending": ending_type,
+            "day": player.days,
+            "health": player.health,
+            "morale": player.morale,
+            "achievements": sum(1 for a in player.achievements.values() if a.unlocked),
+            "difficulty": player.difficulty.value,
+            "theme": player.theme.name,
+        })
+
+    def log_error(self, error_type: str, message: str, context: dict[str, Any] | None = None, traceback_str: str | None = None) -> None:
+        """Log an error, exception, or invalid input."""
+        error_data = {
+            "error_type": error_type,
+            "message": message,
+            "context": context or {},
+        }
+        if traceback_str:
+            error_data["traceback"] = traceback_str
+        self.log_event("error", error_data)
+
+    def log_exception(self, exc: Exception, context: dict[str, Any] | None = None) -> None:
+        """Log an unhandled exception with full traceback."""
+        import traceback as tb
+        self.log_error(
+            error_type=type(exc).__name__,
+            message=str(exc),
+            context=context,
+            traceback_str=tb.format_exc(),
+        )
+
+    def get_summary(self) -> dict[str, Any]:
+        """Generate analytics summary from events."""
+        if not self.events:
+            return {}
+
+        choices = [e for e in self.events if e["type"] == "choice"]
+        events = [e for e in self.events if e["type"] == "random_event"]
+        deaths = [e for e in self.events if e["type"] == "death"]
+        victories = [e for e in self.events if e["type"] == "victory"]
+        errors = [e for e in self.events if e["type"] == "error"]
+
+        return {
+            "session_id": self.session_id,
+            "total_events": len(self.events),
+            "duration_seconds": round(time.time() - self.start_time, 1),
+            "choices_made": len(choices),
+            "random_events": len(events),
+            "deaths": len(deaths),
+            "victories": len(victories),
+            "errors": len(errors),
+            "error_types": [e.get("error_type") for e in errors],
+            "event_types": {e["event"]: e.get("outcome") for e in events[-10:]},  # last 10
+        }
+
+
+# Global logger instance
+GAME_LOGGER: GameLogger | None = None
+
+
+def init_logger(session_id: str | None = None) -> GameLogger:
+    """Initialize the global game logger."""
+    global GAME_LOGGER
+    GAME_LOGGER = GameLogger(session_id=session_id)
+    return GAME_LOGGER
+
+
+def log_game(event_type: str, data: dict[str, Any]) -> None:
+    """Convenience function for logging."""
+    if GAME_LOGGER:
+        GAME_LOGGER.log_event(event_type, data)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -779,10 +1019,27 @@ class Player:
     scout_count: int = 0
     combats_survived: int = 0
     milestones_hit: set[int] = field(default_factory=set)  # percentages hit
+    food_debt: float = 0.0  # Track fractional food consumption
+    water_debt: float = 0.0  # Track fractional water consumption
 
     def __post_init__(self) -> None:
         if not self.supplies:
+            # Apply difficulty multiplier
             mult = DIFFICULTY_SETTINGS[self.difficulty]["supply_mult"]
+            
+            # Apply auto-tuning adjustments
+            load_tuning_config()
+            theme_key = f"theme_{self.theme.name}_supply_multiplier"
+            mult *= get_tuned_value(theme_key, 1.0)
+            
+            # Global easy mode boost if tuning recommends
+            if self.difficulty == Difficulty.EASY:
+                mult *= get_tuned_value("global_easy_boost", 1.0)
+            
+            # Difficulty-specific multipliers
+            diff_key = f"difficulty_{self.difficulty.value}_multiplier"
+            mult *= get_tuned_value(diff_key, 1.0)
+            
             self.supplies = {k: int(v * mult) for k, v in self.theme.starting_supplies.items()}
         if not self.achievements:
             self.achievements = _make_achievements()
@@ -816,6 +1073,10 @@ class Player:
     def damage(self, amount: int) -> None:
         """Apply damage scaled by difficulty and status effects."""
         mult = DIFFICULTY_SETTINGS[self.difficulty]["damage_mult"]
+        
+        # Apply auto-tuning for combat damage
+        mult *= get_tuned_value("combat_damage_multiplier", 1.0)
+        
         if StatusEffect.SHIELDED in self.status_effects:
             mult *= 0.5
             print(f"  {Fore.CYAN}(Shielded — damage halved!){Style.RESET_ALL}")
@@ -833,9 +1094,22 @@ class Player:
             print(f"  {Fore.GREEN}Health +{gained}{Style.RESET_ALL}")
 
     def consume_daily(self) -> None:
+        # Use fractional debt accumulation to allow tuning to work with values < 1.0
+        # This prevents the rounding issue where 0.65 → 0 → max(1,0) → 1 (broken)
         mult = DIFFICULTY_SETTINGS[self.difficulty]["daily_consume"]
-        food_cost = max(1, int(1 * mult))
-        water_cost = max(1, int(1 * mult))
+        
+        # Apply auto-tuning for consumption rates
+        mult *= get_tuned_value("food_consumption_rate", 1.0)
+        self.food_debt += mult
+        food_cost = int(self.food_debt)
+        self.food_debt -= food_cost
+        
+        mult_water = DIFFICULTY_SETTINGS[self.difficulty]["daily_consume"]
+        mult_water *= get_tuned_value("water_consumption_rate", 1.0)
+        self.water_debt += mult_water
+        water_cost = int(self.water_debt)
+        self.water_debt -= water_cost
+        
         if StatusEffect.EXHAUSTED in self.status_effects:
             food_cost += 1
             water_cost += 1
@@ -884,6 +1158,7 @@ class Player:
             print(f"\n  {Fore.YELLOW}{ASCII_ACHIEVEMENT}{Style.RESET_ALL}")
             print(f"  {Fore.YELLOW}★ Achievement Unlocked: {ach.name}{Style.RESET_ALL}")
             print(f"    {ach.description}\n")
+            log_game("achievement_unlock", {"achievement": ach_id, "name": ach.name})
             pause(0.8)
 
     def status_text(self) -> str:
@@ -924,10 +1199,10 @@ def advance_time_of_day(player: Player) -> None:
     player.time_of_day = cycle[(idx + 1) % 4]
 
     if player.time_of_day == TimeOfDay.DAWN:
-        print(ASCII_DAWN)
+        print(colorize_ascii(ASCII_DAWN, Fore.YELLOW))
         print(f"  {Fore.YELLOW}A new dawn breaks.{Style.RESET_ALL}")
     elif player.time_of_day == TimeOfDay.NIGHT:
-        print(ASCII_NIGHT)
+        print(colorize_ascii(ASCII_NIGHT, Fore.CYAN))
         print(f"  {Fore.CYAN}Night falls. Dangers increase.{Style.RESET_ALL}")
         if not player.has("Ember Stone"):
             print(f"  {Fore.YELLOW}The cold saps your energy without an Ember Stone.{Style.RESET_ALL}")
@@ -996,7 +1271,7 @@ def check_milestones(player: Player) -> None:
     for threshold in (25, 50, 75):
         if pct >= threshold and threshold not in player.milestones_hit:
             player.milestones_hit.add(threshold)
-            print(ASCII_MILESTONE)
+            print(colorize_ascii(ASCII_MILESTONE, Fore.MAGENTA))
             narrative = MILESTONE_NARRATIVES.get(player.theme.id, {}).get(threshold, "")
             if narrative:
                 slow_print(wrapped(f"  {narrative}"), delay=0.012)
@@ -1023,7 +1298,7 @@ def _event_bandit(player: Player) -> None:
         player.remove_item("Shadow Cloak")
         return
 
-    print(ASCII_BATTLE)
+    print(colorize_ascii(ASCII_BATTLE, Fore.RED))
     print(f"  {Fore.RED}{name} block your path!{Style.RESET_ALL}")
     print(f"  1. Fight the {noun}")
     print(f"  2. Attempt to flee")
@@ -1067,7 +1342,7 @@ def _event_bandit(player: Player) -> None:
 
 
 def _event_river(player: Player) -> None:
-    print(ASCII_RIVER)
+    print(colorize_ascii(ASCII_RIVER, Fore.CYAN))
     labels = {
         ThemeId.DESERT: "a flash-flood canyon",
         ThemeId.SPACE: "an asteroid belt",
@@ -1103,7 +1378,7 @@ def _event_river(player: Player) -> None:
 
 
 def _event_storm(player: Player) -> None:
-    print(ASCII_STORM)
+    print(colorize_ascii(ASCII_STORM, Fore.RED))
     labels = {
         ThemeId.DESERT: "A violent sandstorm",
         ThemeId.SPACE: "A solar flare",
@@ -1226,7 +1501,7 @@ def _event_trader(player: Player) -> None:
 
 
 def _event_discovery(player: Player) -> None:
-    print(ASCII_TREASURE)
+    print(colorize_ascii(ASCII_TREASURE, Fore.YELLOW))
     labels = {
         ThemeId.DESERT: "a buried sandstone vault",
         ThemeId.SPACE: "a derelict cargo pod",
@@ -1262,7 +1537,7 @@ def _event_discovery(player: Player) -> None:
 
 
 def _event_morale(player: Player) -> None:
-    print(ASCII_CAMP)
+    print(colorize_ascii(ASCII_CAMP, Fore.YELLOW))
     labels = {
         ThemeId.DESERT: "Your caravan gathers around a fire beneath the stars.",
         ThemeId.SPACE: "The crew gathers in the observation lounge.",
@@ -1320,7 +1595,7 @@ def _event_special_item(player: Player) -> None:
 
 def _event_riddle(player: Player) -> None:
     """A sphinx-like figure poses a riddle."""
-    print(ASCII_RIDDLE)
+    print(colorize_ascii(ASCII_RIDDLE, Fore.MAGENTA))
     labels = {
         ThemeId.DESERT: "A stone sphinx rises from the sand",
         ThemeId.SPACE: "An alien monolith broadcasts a signal",
@@ -1362,7 +1637,7 @@ def _event_companion(player: Player) -> None:
     """Chance to recruit a companion (only one at a time)."""
     if player.companion:
         # already have a companion — companion event becomes a shared mini-story
-        print(ASCII_COMPANION)
+        print(colorize_ascii(ASCII_COMPANION, Fore.GREEN))
         print(f"  {player.companion.name} tells you about a shortcut they remember.")
         if random.random() < 0.6:
             bonus = random.randint(15, 30)
@@ -1377,7 +1652,7 @@ def _event_companion(player: Player) -> None:
     if not pool:
         return
     companion = random.choice(pool)
-    print(ASCII_COMPANION)
+    print(colorize_ascii(ASCII_COMPANION, Fore.GREEN))
     print(f"  You encounter {Fore.CYAN}{companion.name} the {companion.title}{Style.RESET_ALL}!")
     print(f"  \"{companion.flavour}\"")
     print(f"  Bonus: +{companion.bonus_value} {companion.bonus_type}")
@@ -1499,7 +1774,7 @@ def _event_weather_shift(player: Player) -> None:
 # ──────────────────────────────────────────────────────────────────────
 def _mini_game_dice(player: Player) -> None:
     """Dice gambling mini-game."""
-    print(ASCII_DICE)
+    print(colorize_ascii(ASCII_DICE, Fore.MAGENTA))
     print("  The trader challenges you to a dice game!")
     print(f"  Stake: 5 {player.theme.supply_names['food']} each")
     print("  Rules: both roll two dice. Highest total wins.")
@@ -1571,8 +1846,10 @@ def trigger_random_event(player: Player) -> None:
             if fn in (_event_bandit, _event_ambush_elite, _event_wildlife):
                 adjusted_weights[i] = int(adjusted_weights[i] * 1.5)
     chosen = random.choices(funcs, adjusted_weights, k=1)[0]
+    event_name = chosen.__name__.replace("_event_", "")
     hr("~")
     print(f"  {Fore.MAGENTA}** An event unfolds... **{Style.RESET_ALL}")
+    log_game("event_start", {"event": event_name, "day": player.days})
     chosen(player)
     hr("~")
 
@@ -1619,7 +1896,7 @@ def use_item(player: Player) -> None:
 # ──────────────────────────────────────────────────────────────────────
 def craft_menu(player: Player) -> None:
     """Show available crafting recipes and let the player craft."""
-    print(ASCII_CRAFT)
+    print(colorize_ascii(ASCII_CRAFT, Fore.CYAN))
     available = []
     for a, b, result, desc in CRAFT_RECIPES:
         if player.has(a) and player.has(b) and not player.has(result):
@@ -1690,6 +1967,10 @@ def daily_action(player: Player) -> None:
     print("  5. Craft items")
     print("  6. Check status & map")
     choice = get_choice("  > ", range(1, 7))
+    
+    action_names = {"1": "travel", "2": "rest", "3": "scout", "4": "use_item", "5": "craft", "6": "status"}
+    if GAME_LOGGER:
+        GAME_LOGGER.log_choice("daily_action", action_names.get(choice, choice), {"day": player.days})
 
     if choice == "1":
         bonus = 10 if (player.has("Wanderer's Compass") or player.has("Guardian's Mantle")) else 0
@@ -1785,18 +2066,25 @@ def daily_action(player: Player) -> None:
 # Starvation / low-morale consequences
 # ──────────────────────────────────────────────────────────────────────
 def apply_penalties(player: Player) -> None:
+    penalties = []
     if player.supplies["food"] <= 0:
         print(f"  {Fore.RED}You are starving! Health is dropping.{Style.RESET_ALL}")
         player.health -= 8
+        penalties.append("starvation")
     if player.supplies["water"] <= 0:
         print(f"  {Fore.RED}You are dehydrated! Health is dropping fast.{Style.RESET_ALL}")
         player.health -= 12
+        penalties.append("dehydration")
     if player.morale <= 10:
         print(f"  {Fore.YELLOW}Morale is critically low. Your resolve wavers.{Style.RESET_ALL}")
         player.health -= 3
+        penalties.append("low_morale")
     if StatusEffect.EXHAUSTED in player.status_effects:
         print(f"  {Fore.YELLOW}Exhaustion wears you down...{Style.RESET_ALL}")
         player.health -= 2
+        penalties.append("exhaustion")
+    if penalties:
+        log_game("penalties_applied", {"penalties": penalties, "health": player.health})
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1880,19 +2168,23 @@ def show_ending(player: Player) -> None:
     hr("*")
 
     best_signal = player.has("Signal-Flare") or player.has("Beacon Array")
+    ending_type = "death"
 
     if player.health <= 0:
-        print(ASCII_GAMEOVER)
+        print(colorize_ascii(ASCII_GAMEOVER, Fore.RED))
         slow_print(wrapped(
             f"  {player.name}'s journey ends in tragedy.  "
             f"The {t.distance_unit} stretched too far, and the "
             f"perils of the road claimed another soul.  "
             f"Perhaps the next traveler will fare better..."
         ), delay=0.015)
+        if GAME_LOGGER:
+            cause = "combat" if player.combats_survived > 3 else "starvation" if player.supplies["food"] <= 0 else "dehydration" if player.supplies["water"] <= 0 else "unknown"
+            GAME_LOGGER.log_death(cause, player)
 
     elif player.distance_travelled >= t.total_distance and best_signal and player.health >= 80:
         # PERFECT ENDING
-        print(ASCII_VICTORY)
+        print(colorize_ascii(ASCII_VICTORY, Fore.GREEN))
         slow_print(wrapped(
             f"  A LEGENDARY victory!  {player.name} completes the journey "
             f"in peak condition with a rescue signal blazing.  "
@@ -1901,41 +2193,56 @@ def show_ending(player: Player) -> None:
         ), delay=0.015)
         player.try_unlock("best_ending")
         player.try_unlock("flawless")
+        ending_type = "perfect"
+        if GAME_LOGGER:
+            GAME_LOGGER.log_victory(ending_type, player)
 
     elif player.distance_travelled >= t.total_distance and best_signal:
-        print(ASCII_VICTORY)
+        print(colorize_ascii(ASCII_VICTORY, Fore.GREEN))
         slow_print(wrapped(
             f"  Against all odds, {player.name} completes the journey!  "
             f"Using the signal, a rescue party is summoned.  "
             f"Songs will be sung of this triumph for generations."
         ), delay=0.015)
         player.try_unlock("best_ending")
+        ending_type = "good_signal"
+        if GAME_LOGGER:
+            GAME_LOGGER.log_victory(ending_type, player)
 
     elif player.distance_travelled >= t.total_distance and player.health >= 80:
-        print(ASCII_VICTORY)
+        print(colorize_ascii(ASCII_VICTORY, Fore.GREEN))
         slow_print(wrapped(
             f"  {player.name} arrives strong and healthy!  "
             f"Though no signal was sent, the destination is reached.  "
             f"A quiet victory, but a victory nonetheless."
         ), delay=0.015)
         player.try_unlock("flawless")
+        ending_type = "good_healthy"
+        if GAME_LOGGER:
+            GAME_LOGGER.log_victory(ending_type, player)
 
     elif player.distance_travelled >= t.total_distance:
-        print(ASCII_VICTORY)
+        print(colorize_ascii(ASCII_VICTORY, Fore.GREEN))
         slow_print(wrapped(
             f"  {player.name} reaches the destination battered but alive.  "
             f"Without a signal, survival is uncertain, "
             f"but the journey itself was the true reward."
         ), delay=0.015)
+        ending_type = "arrived"
+        if GAME_LOGGER:
+            GAME_LOGGER.log_victory(ending_type, player)
 
     else:
-        print(ASCII_GAMEOVER)
+        print(colorize_ascii(ASCII_GAMEOVER, Fore.RED))
         slow_print(wrapped(
             f"  {player.name} could not complete the journey.  "
             f"Only {player.distance_travelled} of {t.total_distance} "
             f"{t.distance_unit} were covered.  "
             f"The wilds claim another unfinished story."
         ), delay=0.015)
+        ending_type = "incomplete"
+        if GAME_LOGGER and player.health > 0:
+            GAME_LOGGER.log_event("incomplete", {"distance_pct": int(player.distance_travelled / t.total_distance * 100)})
 
     if player.distance_travelled >= t.total_distance and player.is_alive():
         player.try_unlock("survivor")
@@ -1989,7 +2296,9 @@ def choose_difficulty() -> Difficulty:
 
 
 def introduction(player: Player) -> None:
-    print(player.theme.ascii_art)
+    # Color theme art based on theme
+    colored_art = colorize_ascii(player.theme.ascii_art, get_theme_ascii_color(player.theme.id))
+    print(colored_art)
     hr()
     slow_print(wrapped(f"  {player.theme.intro_text}"), delay=0.012)
     hr()
@@ -2114,7 +2423,12 @@ def run_automated_test(theme_idx: int = 1, difficulty_idx: int = 2,
 
 def _run_game_loop(max_days: int = 200) -> None:
     """Internal game loop used by both interactive and test modes."""
-    print(ASCII_TITLE)
+    # Initialize logger for this session
+    init_logger()
+    
+    # Colorize title with gradient
+    title_colors = [Fore.CYAN, Fore.MAGENTA, Fore.CYAN]
+    print(colorize_ascii_gradient(ASCII_TITLE, title_colors))
     print(f"  {Fore.CYAN}Terminal Adventure Quest{Style.RESET_ALL}")
     print("  A text-based survival journey\n")
     hr()
@@ -2122,7 +2436,14 @@ def _run_game_loop(max_days: int = 200) -> None:
     try:
         name = input("  Enter your name: ").strip() or "Adventurer"
     except (EOFError, KeyboardInterrupt):
+        if GAME_LOGGER:
+            GAME_LOGGER.log_error("UserInterrupt", "User exited during name input")
         print("\nGoodbye!")
+        return
+    except Exception as e:
+        if GAME_LOGGER:
+            GAME_LOGGER.log_exception(e, context={"stage": "name_input"})
+        print(f"\n{Fore.RED}Error during name input: {e}{Style.RESET_ALL}")
         return
 
     print("\n  Enter a seed number to replay a specific journey,")
@@ -2138,24 +2459,76 @@ def _run_game_loop(max_days: int = 200) -> None:
     theme = choose_theme()
     difficulty = choose_difficulty()
     player = Player(name=name, theme=theme, difficulty=difficulty, seed=seed)
+    
+    # Log game start
+    if GAME_LOGGER:
+        GAME_LOGGER.log_event("game_start", {
+            "player_name": name,
+            "theme": theme.name,
+            "difficulty": difficulty.value,
+            "seed": seed,
+        })
+        GAME_LOGGER.log_player_state(player, "initial")
+    
     introduction(player)
 
     day_count = 0
     while player.distance_travelled < theme.total_distance and player.is_alive():
-        print_status(player)
-        daily_action(player)
-        apply_penalties(player)
-        day_count += 1
-        if day_count >= max_days:
-            print(f"\n  {Fore.YELLOW}(Max days reached — ending game.){Style.RESET_ALL}")
+        try:
+            print_status(player)
+            
+            # Log periodic snapshots
+            if GAME_LOGGER and player.days % 10 == 0:
+                GAME_LOGGER.log_player_state(player, f"day_{player.days}")
+            
+            daily_action(player)
+            apply_penalties(player)
+            day_count += 1
+            if day_count >= max_days:
+                print(f"\n  {Fore.YELLOW}(Max days reached — ending game.){Style.RESET_ALL}")
+                if GAME_LOGGER:
+                    GAME_LOGGER.log_event("max_days_reached", {"days": max_days})
+                break
+            if not player.is_alive():
+                break
+        except KeyboardInterrupt:
+            if GAME_LOGGER:
+                GAME_LOGGER.log_error(
+                    error_type="UserInterrupt",
+                    message="User interrupted during game loop",
+                    context={"day": player.days, "distance": player.distance_travelled}
+                )
+            print(f"\n\n{Fore.YELLOW}Game interrupted by user.{Style.RESET_ALL}")
             break
-        if not player.is_alive():
+        except Exception as e:
+            if GAME_LOGGER:
+                GAME_LOGGER.log_exception(e, context={
+                    "day": player.days,
+                    "distance": player.distance_travelled,
+                    "health": player.health,
+                    "phase": "game_loop"
+                })
+            print(f"\n\n{Fore.RED}ERROR: {e}{Style.RESET_ALL}")
+            print(f"Game crashed on day {player.days}. Check logs for details.")
             break
 
     if player.is_alive() and player.distance_travelled >= theme.total_distance:
         final_encounter(player)
 
+    # Final state snapshot before ending
+    if GAME_LOGGER:
+        GAME_LOGGER.log_player_state(player, "final")
+    
     show_ending(player)
+    
+    # Log session summary
+    if GAME_LOGGER:
+        summary = GAME_LOGGER.get_summary()
+        GAME_LOGGER.log_event("session_end", summary)
+        if not TEST_MODE:
+            print(f"\n  {Fore.CYAN}[Session logged: {GAME_LOGGER.log_file}]{Style.RESET_ALL}")
+            if summary.get("errors", 0) > 0:
+                print(f"  {Fore.YELLOW}[{summary['errors']} error(s) logged during session]{Style.RESET_ALL}")
 
     print(f"  {Fore.CYAN}Want to play again?{Style.RESET_ALL}")
     print("  1. Yes — same seed (replay)")
@@ -2188,11 +2561,15 @@ def main() -> None:
                         help="Max days before auto-ending (test mode)")
     parser.add_argument("--fast", action="store_true",
                         help="Disable slow text printing for faster play")
+    parser.add_argument("--no-log", action="store_true",
+                        help="Disable gameplay logging")
     args = parser.parse_args()
 
-    global TEST_MODE, SLOW_PRINT_DELAY
+    global TEST_MODE, SLOW_PRINT_DELAY, LOGGING_ENABLED
     if args.fast:
         SLOW_PRINT_DELAY = 0.0
+    if args.no_log:
+        LOGGING_ENABLED = False
 
     if args.test:
         TEST_MODE = True

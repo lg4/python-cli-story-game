@@ -1,0 +1,17 @@
+{
+  "adjustments": {
+    "theme_Time-Travel Expedition_supply_multiplier": 4.0,
+    "theme_The Desert Caravan_supply_multiplier": 6.0,
+    "water_consumption_rate": 0.35,
+    "theme_Cyberpunk Heist_supply_multiplier": 3.5,
+    "difficulty_normal_multiplier": 1.65,
+    "difficulty_easy_damage_multiplier": 0.3,
+    "food_consumption_rate": 0.3,
+    "theme_Space Colony Expedition_supply_multiplier": 5.0,
+    "global_easy_boost": 2.5,
+    "theme_Lost Kingdom of the Mist_supply_multiplier": 5.0,
+    "difficulty_easy_multiplier": 2.5,
+    "difficulty_hard_multiplier": 1.2
+  },
+  "version": "1.0"
+}
