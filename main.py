@@ -30,6 +30,7 @@ import argparse
 import io
 import json
 import logging
+import requests
 from datetime import datetime
 from pathlib import Path
 import random
@@ -62,6 +63,12 @@ except ImportError:
 TEST_MODE: bool = False        # when True, skip delays & read from input queue
 SLOW_PRINT_DELAY: float = 0.02  # character delay for theatrical prints
 LOGGING_ENABLED: bool = True    # when True, writes gameplay logs to disk
+SELECTED_AI_MODEL: str = "gemma3:4b"  # Selected Ollama model for AI scenarios
+
+# Ollama API Configuration
+OLLAMA_HOST: str = "localhost"  # Using local Ollama instance
+OLLAMA_PORT: int = 11434         # Default Ollama port
+OLLAMA_URL: str = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}"  # Full API endpoint
 
 # ──────────────────────────────────────────────────────────────────────
 # Auto-tuning system (learns from logs)
@@ -133,6 +140,15 @@ def hr(char: str = "─") -> None:
     print(char * WIDTH)
 
 
+def clear_screen() -> None:
+    """Clear the terminal screen. Works on Windows, macOS, and Linux."""
+    import os
+    if os.name == 'nt':
+        os.system('cls')
+    else:
+        os.system('clear')
+
+
 # ──────────────────────────────────────────────────────────────────────
 # ASCII Art colorization helpers
 # ──────────────────────────────────────────────────────────────────────
@@ -195,6 +211,33 @@ def get_choice(prompt: str, valid: range | list[str], *, allow_empty: bool = Fal
 def pause(seconds: float = 1.0) -> None:
     """Sleep unless in test mode."""
     if not TEST_MODE:
+        time.sleep(seconds)
+
+
+def pause_for_action(seconds: float = 1.5) -> None:
+    """
+    Pause between actions with visual separator.
+    Can be interrupted by pressing Enter in test/interactive mode.
+    Shows a subtle prompt if not in test mode.
+    """
+    if TEST_MODE:
+        return
+    
+    hr()  # Print separator line
+    try:
+        # Use a non-blocking approach: give user option to press Enter or wait
+        import select
+        import sys as _sys
+        if hasattr(select, 'select') and _sys.platform != 'win32':
+            # Unix-like systems
+            rlist, _, _ = select.select([_sys.stdin], [], [], seconds)
+            if rlist:
+                input()  # Consume the keypress
+        else:
+            # Windows or fallback
+            time.sleep(seconds)
+    except Exception:
+        # Fallback if select fails
         time.sleep(seconds)
 
 
@@ -466,22 +509,33 @@ ASCII_CYBER = r"""
 """
 
 ASCII_RIVER = r"""
-      :~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:
-    :~:    :~:    :~:    :~:    :~:    :~:   :~:
-  :~:   :~:   :~:   :~:   :~:   :~:   :~:  :~:
-    :~:    :~:    :~:    :~:    :~:    :~:   :~:
-      :~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:
+    ╔═══════════════════════════════════╗
+    ║    🌊  WATER CROSSING  🌊        ║
+    ╚═══════════════════════════════════╝
+      ≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈
+    ≈≈  ≈≈  ≈≈  ≈≈  ≈≈  ≈≈  ≈≈  ≈≈  ≈≈
+  ≈≈  ≈≈  ≈≈  ≈≈  ≈≈  ≈≈  ≈≈  ≈≈  ≈≈  ≈
+    ≈≈  ≈≈  ≈≈  ≈≈  ≈≈  ≈≈  ≈≈  ≈≈  ≈≈
+      ≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈≈
 """
 
 ASCII_BATTLE = r"""
-       O                           O
-      /|\   Clash!  *   *   *    /|\
-      / \         *   *   *      / \
-     /   \      /  CLANG!  \    /   \
-    /     \    /             \  /     \
+    ╔═══════════════════════════════╗
+    ║   ⚔️  COMBAT ENCOUNTER  ⚔️    ║
+    ╚═══════════════════════════════╝
+         ⚔                    ⚔
+        /|\      * * *       /|\
+         |     *  CLASH  *    |
+        / \   * * *  * * *   / \
+       /   \                /   \
+      █████                 █████
+    [ENEMY]                [YOU]
 """
 
 ASCII_TREASURE = r"""
+    ╔═══════════════════════════════╗
+    ║      ✨  DISCOVERY  ✨       ║
+    ╚═══════════════════════════════╝
             _.---.
         _.-'  _  `-.
     _.-' .--.' `.--. `-.
@@ -494,7 +548,6 @@ ASCII_TREASURE = r"""
     `-._  `-.____.-'  _.-'
         `-.________.-'
            | LOOT |
-           '------'
 """
 
 ASCII_CAMP = r"""
@@ -509,15 +562,15 @@ ASCII_CAMP = r"""
 """
 
 ASCII_STORM = r"""
-          .-~~~-.
-  .- ~ ~-(       )_ _
- /        `-. _.-'    `-.
-|    ///  ///             \
- \   ///  ///            .'
-  `- . _ __ _ . - ~  ~ -'
-       / / / /
-      / / / /     CRACK!
-     / / / /
+       __   _  __   _   __  __   _
+     (  _ ( \( _) ( ) (  \/  ) ( \  
+     \_\  )   ( (_  )_\  ))  ((  )  ) 
+      (_(_)\_)(__)(___)(__)(__)(__)  
+    ╔════════════════════════════╗
+    ║  ≋≋≋  THE STORM RAGES  ≋≋≋  ║
+    ╚════════════════════════════╝
+       |||  |||  |||  |||  |||
+        ||  ||  ||  ||  ||  ||
 """
 
 ASCII_NIGHT = r"""
@@ -549,13 +602,17 @@ ASCII_COMPANION = r"""
 """
 
 ASCII_RIDDLE = r"""
-      _______
-     /       \
-    |  ?   ?  |
-    |    ^    |
-    |  \___/  |
-     \_______/
-   The Sphinx waits...
+    ╔═══════════════════════════════╗
+    ║    🎭  RIDDLE TIME  🎭        ║
+    ╚═══════════════════════════════╝
+         ___________
+        /           \
+       |  ?       ?  |
+       |      ^      |
+       |   \     /   |
+       |    \___/    |
+        \___________/
+      The Sphinx waits...
 """
 
 ASCII_DICE = r"""
@@ -645,6 +702,168 @@ ASCII_MILESTONE = r"""
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Dynamic ASCII Art Generator for AI-Generated Theme
+# ──────────────────────────────────────────────────────────────────────
+def generate_ai_ascii_art() -> str:
+    """
+    Generate dynamic ASCII art header using AI.
+    Creates a unique, thematic visual header for each AI-generated adventure.
+    Falls back to static patterns if AI generation fails.
+    """
+    # Skip AI generation in TEST_MODE or if we want to use fallback
+    if TEST_MODE:
+        return generate_ai_ascii_art_fallback()
+    
+    try:
+        # Request AI to generate an ASCII art header
+        prompt = (
+            "Create a unique ASCII art header (5-8 lines) for a dynamic text adventure game. "
+            "Use Unicode symbols like ═ ║ ╔ ╗ ╚ ╝ ▓ ▒ ░ ◆ ◊ ✧ ✦ ━ ─ │ ┌ ┐ └ ┘. "
+            "Include a title (2-4 words) that evokes mystery, adventure, or the unknown. "
+            "Add a short tagline (3-6 words). Make it visually striking and centered. "
+            "Output ONLY the ASCII art, no explanations."
+        )
+        
+        response = requests.post(
+            f'{OLLAMA_URL}/api/generate',
+            json={
+                "model": SELECTED_AI_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "temperature": 1.2,  # Higher creativity for art
+                "top_p": 0.95,
+            },
+            timeout=15
+        )
+        
+        if response.status_code == 200:
+            result = response.json().get('response', '').strip()
+            # Clean up any meta-text
+            if result and len(result) > 30 and len(result) < 800:
+                # Remove common AI prefixes
+                for prefix in ["Here's", "Here is", "Sure", "Okay", "```", "**"]:
+                    if result.startswith(prefix):
+                        # Try to extract just the ASCII art
+                        lines = result.split('\n')
+                        result = '\n'.join(lines[1:]).strip()
+                        break
+                
+                # Remove markdown code blocks
+                result = result.replace('```', '').strip()
+                
+                if result and not result.startswith('I '):
+                    return result
+    except Exception as e:
+        pass
+    
+    # Fallback to static patterns
+    return generate_ai_ascii_art_fallback()
+
+
+def generate_ai_intro_text() -> str:
+    """
+    Generate dynamic intro text using AI for the AI-Generated theme.
+    Creates a unique narrative setup for each adventure.
+    Falls back to default text if AI generation fails.
+    """
+    if TEST_MODE:
+        return (
+            "You embark on an adventure unlike any other. The path ahead is "
+            "uncertain, shaped by forces beyond your control. Each moment brings "
+            "new challenges, new mysteries. Powered by AI, your journey will be "
+            "unique — no two adventures are ever the same."
+        )
+    
+    try:
+        prompt = (
+            "Write a 3-4 sentence dramatic introduction for a text adventure game. "
+            "The setting is mysterious and adaptive - could be any genre (fantasy, sci-fi, horror, etc). "
+            "Make it atmospheric and intriguing. Emphasize that the journey is unique and unpredictable. "
+            "Use second person ('You'). Keep it under 250 characters. "
+            "Output ONLY the introduction text, no quotes or explanations."
+        )
+        
+        response = requests.post(
+            f'{OLLAMA_URL}/api/generate',
+            json={
+                "model": SELECTED_AI_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "temperature": 1.1,
+                "top_p": 0.9,
+            },
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            result = response.json().get('response', '').strip()
+            # Clean up quotes and meta-text
+            result = result.strip('"\'').strip()
+            if result and len(result) > 50 and len(result) < 600 and not result.startswith('I '):
+                return result
+    except Exception:
+        pass
+    
+    # Fallback
+    return (
+        "You embark on an adventure unlike any other. The path ahead is "
+        "uncertain, shaped by forces beyond your control. Each moment brings "
+        "new challenges, new mysteries. Powered by AI, your journey will be "
+        "unique — no two adventures are ever the same."
+    )
+
+
+def generate_ai_ascii_art_fallback() -> str:
+    """
+    Fallback static ASCII art patterns when AI generation unavailable.
+    """
+    patterns = [
+        # Pattern 1: Hexagonal grid with stars
+        r"""
+    ▓▒░  ◊  UNWRITTEN DESTINY  ◊  ░▒▓
+    ════════════════════════════════════
+      ✦   Every choice shapes reality   ✦
+    ════════════════════════════════════
+            ╔═══════════════╗
+            ║    ▓█░░░▓█    ║
+            ║    ░░░░░░░░    ║
+            ║    ░ TALE ░    ║
+            ║    ░░░░░░░░    ║
+            ╚═══════════════╝
+        """,
+        # Pattern 2: Cosmic/void theme
+        r"""
+    ◆ ▓▒░ INFINITE PATHS ░▒▓ ◆
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━
+      ✧   A thousand futures await   ✧
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━
+        ✧ ✦ ✧ ✦ ✧
+       ✦   Reality bends   ✦
+        ✧ ✦ ✧ ✦ ✧
+        """,
+        # Pattern 3: Fractal/recursive theme
+        r"""
+    ▓▒░ FRACTURED NARRATIVES ░▒▓
+    ╔═══════════════════════════════╗
+    ║  ┌─────────────────────────┐  ║
+    ║  │  ◊ Your  Story ◊        │  ║
+    ║  │  Echoes Across  Worlds  │  ║
+    ║  └─────────────────────────┘  ║
+    ╚═══════════════════════════════╝
+        """,
+        # Pattern 4: Probability/quantum theme
+        r"""
+      ◊ ▓▒░  QUANTUM ADVENTURE  ░▒▓ ◊
+    ═══════════════════════════════════
+       ✧ Superposition of all tales ✧
+    ═══════════════════════════════════
+       |⚛| OBSERVATION PENDING |⚛|
+        """,
+    ]
+    return random.choice(patterns).strip()
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Enums
 # ──────────────────────────────────────────────────────────────────────
 class ThemeId(Enum):
@@ -653,6 +872,7 @@ class ThemeId(Enum):
     MIST = "mist"
     TIME = "time"
     CYBER = "cyber"
+    AI_GENERATED = "ai_generated"
 
 
 class Difficulty(Enum):
@@ -820,6 +1040,23 @@ def _register_themes() -> None:
             "and rival runners.  The payout is freedom… if you survive."
         ),
     )
+    THEMES[ThemeId.AI_GENERATED] = Theme(
+        id=ThemeId.AI_GENERATED, name="AI-Generated Adventure",
+        tagline="Dynamic scenarios powered by Ollama — every playthrough is unique.",
+        ascii_art="[Generating unique ASCII art...]",  # Placeholder; actual art generated dynamically
+        distance_unit="km", total_distance=2000,
+        supply_names={"food": "Provisions", "water": "Water", "fuel": "Energy"},
+        starting_supplies={"food": 60, "water": 70, "fuel": 50},
+        special_item="Adaptive Toolkit",
+        special_item_desc="A versatile tool that adapts to any situation.",
+        daily_distance=(20, 50),
+        intro_text=(
+            "You embark on an adventure unlike any other. The path ahead is "
+            "uncertain, shaped by forces beyond your control. Each moment brings "
+            "new challenges, new mysteries. Powered by AI, your journey will be "
+            "unique — no two adventures are ever the same."
+        ),
+    )
 
 
 _register_themes()
@@ -915,6 +1152,305 @@ RIDDLES: list[tuple[str, list[str], int]] = [
         2,
     ),
 ]
+
+# ──────────────────────────────────────────────────────────────────────
+# AI Scenario Generation (Ollama)
+# ──────────────────────────────────────────────────────────────────────
+
+# Cache for Ollama model list to avoid repeated queries
+_OLLAMA_MODEL_CACHE: list[dict[str, Any]] | None = None
+_OLLAMA_CACHE_TIME: float = 0.0
+OLLAMA_CACHE_DURATION: float = 300.0  # Cache models for 5 minutes
+
+AI_SCENARIO_TEMPLATES: dict[ThemeId, list[str]] = {
+    ThemeId.DESERT: [
+        "You discover ancient ruins half-buried in the sand. Inscriptions glow faintly.",
+        "A mirage appears—but it feels too real. Something moves within it.",
+        "The sand beneath your feet suddenly shifts. You've stumbled upon a hidden cavern.",
+        "A solitary figure on the horizon signals urgently. They seem to know you're coming.",
+        "You find strange crystalline formations that sing in the wind.",
+    ],
+    ThemeId.SPACE: [
+        "An unidentified signal emanates from nearby asteroids. It's in a familiar frequency.",
+        "The ship's scanners detect an artificial construct from unknown origins.",
+        "Spatial radiation spikes. Your instruments show a temporal distortion ahead.",
+        "You receive a distress beacon—but it's dated from 50 years in the future.",
+        "A dormant alien probe awakens as you pass. It begins transmitting.",
+    ],
+    ThemeId.MIST: [
+        "The fog parts briefly, revealing a city that shouldn't exist on any map.",
+        "Ancient music echoes through the mist. Your companions feel strangely drawn to it.",
+        "A figure made of mist approaches. It wears a crown of spectral light.",
+        "The ground beneath you becomes solid—a bridge appears out of nowhere.",
+        "The mist turns colours you've never seen before. It feels alive.",
+    ],
+    ThemeId.TIME: [
+        "You stumble upon a moment where two timelines overlap. You see yourself arriving.",
+        "A chrono-anomaly reveals futures that never were. Some look better, some worse.",
+        "You find a journal written in your own handwriting... decades in the future.",
+        "The fabric of time stutters. You catch glimpses of parallel journeys.",
+        "A Time Guardian manifests, warning of a paradox in your path ahead.",
+    ],
+    ThemeId.CYBER: [
+        "You intercept a data stream from a rival runner—they know your infiltration path.",
+        "The building's AI suddenly goes silent. Someone else has jacked in.",
+        "A black-market neural implant vendor contacts you with intel on the vault.",
+        "Ghost code—remnants of a previous hack—activates and helps you bypass security.",
+        "A corporate kill-team arrives early. Someone leaked your timeline.",
+    ],
+    ThemeId.AI_GENERATED: [
+        "Reality shifts around you. The path ahead morphs into something unexpected.",
+        "A presence watches from the shadows. It knows your name, though you've never met.",
+        "Time and space fracture. You glimpse a thousand possible futures at once.",
+        "The world glitches. For a moment, you see the code underlying everything.",
+        "A voice echoes from nowhere: 'This is not how your story was meant to unfold.'",
+        "The environment warps. Colors bleed into sounds, and gravity becomes optional.",
+        "You encounter a door that wasn't there before. It bears your initials.",
+        "Memory fragments from lives you never lived flood your consciousness.",
+        "A strange artifact pulses with energy. It reacts specifically to your presence.",
+        "The boundary between dream and reality thins. Which side are you on?",
+        "Symbols appear in the air around you, rearranging into a warning message.",
+        "You hear your own voice calling from the distance, but different—older, wiser.",
+        "The path splits into impossible directions. Each feels equally certain and wrong.",
+        "Something ancient stirs. It has been waiting specifically for you to arrive.",
+        "Reality loops. You've experienced this exact moment before, but differently.",
+        "A threshold appears. Crossing it will change everything, but standing still will too.",
+        "The narrative itself seems to falter. You sense the story rewriting around you.",
+        "Probability collapses. Multiple outcomes exist simultaneously until you choose.",
+        "You discover evidence of your own future actions. The causality makes no sense.",
+        "The journey reveals itself to be a test. But who set it, and why?",
+    ],
+}
+
+
+def query_ollama_models() -> list[dict[str, Any]]:
+    """
+    Query Ollama for available models, sorted by size (smallest first).
+    Returns list of model info dicts with 'name' and 'size' keys.
+    Uses caching to avoid repeated network calls.
+    """
+    global _OLLAMA_MODEL_CACHE, _OLLAMA_CACHE_TIME
+    
+    # Check cache validity
+    current_time = time.time()
+    if _OLLAMA_MODEL_CACHE is not None and (current_time - _OLLAMA_CACHE_TIME) < OLLAMA_CACHE_DURATION:
+        return _OLLAMA_MODEL_CACHE
+    
+    try:
+        response = requests.get(f'{OLLAMA_URL}/api/tags', timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            models = data.get('models', [])
+            # Sort by size (smallest first)
+            sorted_models = sorted(models, key=lambda m: m.get('size', 0))
+            # Update cache
+            _OLLAMA_MODEL_CACHE = sorted_models
+            _OLLAMA_CACHE_TIME = current_time
+            return sorted_models
+    except (requests.RequestException, json.JSONDecodeError, KeyError):
+        pass
+    return []
+
+
+def select_ai_model() -> str:
+    """
+    Let user select an Ollama model from available models.
+    Returns selected model name, defaults to gemma3:4b if available.
+    """
+    global SELECTED_AI_MODEL
+    
+    print(f"\n  {Fore.CYAN}Querying Ollama for available models...{Style.RESET_ALL}")
+    models = query_ollama_models()
+    
+    if not models:
+        print(f"  {Fore.YELLOW}Warning: Could not connect to Ollama.{Style.RESET_ALL}")
+        print(f"  {Fore.YELLOW}Make sure Ollama is running on {OLLAMA_URL}{Style.RESET_ALL}")
+        print(f"  Using fallback templates for scenarios.\n")
+        return "gemma3:4b"  # Will fall back to templates
+    
+    print(f"\n  {Fore.GREEN}Found {len(models)} model(s):{Style.RESET_ALL}\n")
+    
+    # Find default (gemma3:4b if available)
+    default_idx = 0
+    for idx, model in enumerate(models):
+        name = model.get('name', 'unknown')
+        size = model.get('size', 0)
+        size_mb = size / (1024 * 1024)
+        size_gb = size / (1024 * 1024 * 1024)
+        
+        if size_gb >= 1:
+            size_str = f"{size_gb:.1f}GB"
+        else:
+            size_str = f"{size_mb:.0f}MB"
+        
+        is_default = "gemma3:4b" in name.lower()
+        if is_default:
+            default_idx = idx
+            print(f"  {idx + 1}. {Fore.GREEN}{name:30}{Style.RESET_ALL} ({size_str}) {Fore.CYAN}[RECOMMENDED]{Style.RESET_ALL}")
+        else:
+            print(f"  {idx + 1}. {name:30} ({size_str})")
+    
+    if not TEST_MODE:
+        print(f"\n  Select model (default: {default_idx + 1}): ", end="")
+        choice = input().strip()
+        if not choice:
+            choice = str(default_idx + 1)
+    else:
+        choice = str(default_idx + 1)
+    
+    try:
+        selected = models[int(choice) - 1]
+        SELECTED_AI_MODEL = selected.get('name', 'gemma3:4b')
+        print(f"  {Fore.GREEN}Selected: {SELECTED_AI_MODEL}{Style.RESET_ALL}\n")
+    except (ValueError, IndexError):
+        SELECTED_AI_MODEL = models[default_idx].get('name', 'gemma3:4b')
+        print(f"  {Fore.YELLOW}Invalid choice. Using: {SELECTED_AI_MODEL}{Style.RESET_ALL}\n")
+    
+    return SELECTED_AI_MODEL
+
+
+def generate_ai_scenario(theme: ThemeId, scenario_type: str = "general", seen_scenarios: set[str] = None) -> str:
+    """
+    Generate a scenario using selected Ollama model, with template fallback.
+    Returns a single-paragraph scenario description (truncated for readability).
+    Guarantees uniqueness by checking against seen_scenarios.
+    
+    scenario_type: 'general', 'danger', 'mystery', 'discovery', 'encounter'
+    seen_scenarios: set of previously seen scenario texts to avoid duplicates
+    """
+    if seen_scenarios is None:
+        seen_scenarios = set()
+    
+    # For AI_GENERATED theme, pick a random theme for context
+    original_theme = theme
+    if theme == ThemeId.AI_GENERATED:
+        theme = random.choice([ThemeId.DESERT, ThemeId.SPACE, ThemeId.MIST, ThemeId.TIME, ThemeId.CYBER])
+    
+    # Skip AI generation in TEST_MODE - go straight to templates
+    if not TEST_MODE:
+        try:
+            # Show loading indicator
+            print(f"  {Fore.CYAN}[Generating scenario...]{Style.RESET_ALL}")
+            
+            # Vary prompts based on scenario type for more diversity
+            prompt_variations = {
+                "general": [
+                    f"Write a mysterious 2-3 sentence event in a {theme.value} adventure. Include sensory details.",
+                    f"Describe an unexpected discovery in a {theme.value} setting. Be atmospheric and vivid.",
+                    f"Create a tense moment of choice in a {theme.value} journey. Focus on mood and stakes.",
+                ],
+                "danger": [
+                    f"Write a dangerous encounter in a {theme.value} world. Build suspense in 2-3 sentences.",
+                    f"Describe a threat emerging in a {theme.value} environment. Make it visceral.",
+                ],
+                "mystery": [
+                    f"Write a cryptic discovery in a {theme.value} setting. Leave questions unanswered.",
+                    f"Describe something impossible in a {theme.value} world. Create wonder and unease.",
+                ],
+                "discovery": [
+                    f"Write about finding something valuable in a {theme.value} journey. Build excitement.",
+                    f"Describe stumbling upon secrets in a {theme.value} landscape. Make it feel earned.",
+                ],
+                "encounter": [
+                    f"Write about meeting someone unique in a {theme.value} world. Show character through details.",
+                    f"Describe an unexpected ally or enemy in a {theme.value} setting. Make them memorable.",
+                ],
+            }
+            
+            prompt = random.choice(prompt_variations.get(scenario_type, prompt_variations["general"]))
+            # Vary temperature for more diversity (higher = more creative)
+            temperature = random.uniform(0.75, 1.1)
+            
+            import time
+            start_time = time.time()
+            response = requests.post(
+                f'{OLLAMA_URL}/api/generate',
+                json={
+                    "model": SELECTED_AI_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "temperature": temperature,
+                    "top_p": 0.9,
+                    "top_k": 40,
+                },
+                timeout=10  # Reduced from 15s for better responsiveness
+            )
+            gen_time = time.time() - start_time
+            
+            # Log generation performance for monitoring
+            if LOGGING_ENABLED and hasattr(globals().get('_current_logger'), 'log_event'):
+                try:
+                    _current_logger.log_event({
+                        "type": "ai_generation_performance",
+                        "model": SELECTED_AI_MODEL,
+                        "scenario_type": scenario_type,
+                        "generation_time_seconds": round(gen_time, 3),
+                        "success": False  # Will be updated if successful
+                    })
+                except:
+                    pass
+            
+            if response.status_code == 200:
+                result = response.json().get('response', '').strip()
+                # Filter out meta-text and unwanted patterns from Ollama
+                unwanted_prefixes = (
+                    "Okay, here's", "Here's a", "Sure, here",
+                    "**", "Alright", "Certainly,", "I'll create",
+                )
+                for prefix in unwanted_prefixes:
+                    if result.startswith(prefix):
+                        result = ""  # Mark for fallback
+                        break
+                
+                # Truncate to ~300 chars (roughly 2-3 sentences) for better pacing
+                if result and len(result) > 20:
+                    if len(result) > 350:
+                        # Find good truncation point (end of sentence)
+                        result = result[:350]
+                        last_period = result.rfind('.')
+                        if last_period > 100:  # Ensure we keep at least some content
+                            result = result[:last_period + 1]
+                    
+                    if result not in seen_scenarios:  # Ensure unique output
+                        return result
+                # If we got a duplicate, fall through to try again with template
+        except (requests.RequestException, json.JSONDecodeError, KeyError, requests.Timeout, ConnectionError) as e:
+            # Log AI generation failure for debugging
+            if not TEST_MODE:
+                try:
+                    print(f"  {Fore.YELLOW}[AI generation failed, using template]{Style.RESET_ALL}")
+                except:
+                    pass
+    
+    # Fallback: use template scenarios (filter out seen ones)
+    # For AI_GENERATED theme, if templates exhausted, borrow from other themes
+    if theme == ThemeId.AI_GENERATED and theme in AI_SCENARIO_TEMPLATES:
+        available_templates = [t for t in AI_SCENARIO_TEMPLATES[theme] if t not in seen_scenarios]
+        if not available_templates:
+            # All AI_GENERATED templates seen, borrow from other themes
+            all_other_templates = []
+            for t_id in [ThemeId.DESERT, ThemeId.SPACE, ThemeId.MIST, ThemeId.TIME, ThemeId.CYBER]:
+                all_other_templates.extend(AI_SCENARIO_TEMPLATES[t_id])
+            available_templates = [t for t in all_other_templates if t not in seen_scenarios]
+            if available_templates:
+                return random.choice(available_templates)
+        if available_templates:
+            return random.choice(available_templates)
+    elif theme in AI_SCENARIO_TEMPLATES:
+        available_templates = [t for t in AI_SCENARIO_TEMPLATES[theme] if t not in seen_scenarios]
+        if available_templates:
+            return random.choice(available_templates)
+        # If all templates seen, allow reuse but modify slightly
+        base = random.choice(AI_SCENARIO_TEMPLATES[theme])
+        variations = [
+            f"{base} The situation feels eerily familiar.",
+            f"{base} Something about this reminds you of before.",
+            f"{base} Déjà vu washes over you.",
+        ]
+        return random.choice(variations)
+    
+    return "A strange turn of events unfolds before you. The air crackles with possibility."
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Crafting recipes
@@ -1021,6 +1557,7 @@ class Player:
     milestones_hit: set[int] = field(default_factory=set)  # percentages hit
     food_debt: float = 0.0  # Track fractional food consumption
     water_debt: float = 0.0  # Track fractional water consumption
+    seen_scenarios: set[str] = field(default_factory=set)  # AI scenarios seen this playthrough
 
     def __post_init__(self) -> None:
         if not self.supplies:
@@ -1285,60 +1822,138 @@ def check_milestones(player: Player) -> None:
 # ──────────────────────────────────────────────────────────────────────
 def _event_bandit(player: Player) -> None:
     labels = {
-        ThemeId.DESERT: ("Sand Raiders", "raiders"),
-        ThemeId.SPACE: ("Void Pirates", "pirates"),
-        ThemeId.MIST: ("Mist Wraiths", "wraiths"),
-        ThemeId.TIME: ("Temporal Echoes", "echoes"),
-        ThemeId.CYBER: ("Rogue ICE Drones", "drones"),
+        ThemeId.DESERT: ("Sand Raiders", "raiders", "Nomadic bandits emerge from dunes, weapons gleaming."),
+        ThemeId.SPACE: ("Void Pirates", "pirates", "Rogue ships decloak, weapons hot and shields up."),
+        ThemeId.MIST: ("Mist Wraiths", "wraiths", "Spectral figures coalesce from the fog, hungry and hostile."),
+        ThemeId.TIME: ("Temporal Echoes", "echoes", "Displaced warriors from another era materialize, confused and aggressive."),
+        ThemeId.CYBER: ("Rogue ICE Drones", "drones", "Hostile security programs lock onto your signature."),
     }
-    name, noun = labels.get(player.theme.id, ("Bandits", "bandits"))
+    name, noun, description = labels.get(player.theme.id, ("Bandits", "bandits", "Hostile figures block your path."))
 
     if player.has("Shadow Cloak"):
-        print(f"  {name} approach, but your Shadow Cloak hides you completely!")
+        print(f"  {name} approach, but your Shadow Cloak bends light around you...")
+        print(f"  {Fore.GREEN}They pass by without noticing!{Style.RESET_ALL}")
         player.remove_item("Shadow Cloak")
+        print("  The cloak's magic is spent, but you're safe.")
         return
 
     print(colorize_ascii(ASCII_BATTLE, Fore.RED))
     print(f"  {Fore.RED}{name} block your path!{Style.RESET_ALL}")
-    print(f"  1. Fight the {noun}")
-    print(f"  2. Attempt to flee")
-    print(f"  3. Offer supplies to negotiate")
+    print(f"  {description}")
+    print()
+    print("  What's your move?")
+    print(f"  1. Stand and fight the {noun}")
+    print(f"  2. Attempt a tactical retreat")
+    print(f"  3. Offer supplies in exchange for safe passage")
+    print(f"  4. Try to intimidate them into backing down")
     if player.companion and player.companion.bonus_type == "combat":
-        print(f"  4. Let {player.companion.name} handle it")
-    choice = get_choice("  > ", range(1, 5 if (player.companion and player.companion.bonus_type == "combat") else 4))
+        print(f"  5. Let {player.companion.name} take the lead in combat")
+    if player.has("Signal-Flare"):
+        print(f"  {6 if (player.companion and player.companion.bonus_type == 'combat') else 5}. Fire Signal-Flare to scare them off")
+    
+    max_choice = 6 if (player.has("Signal-Flare") and player.companion and player.companion.bonus_type == "combat") else (
+        5 if (player.has("Signal-Flare") or (player.companion and player.companion.bonus_type == "combat")) else 4
+    )
+    choice = get_choice("  > ", range(1, max_choice + 1))
 
     if choice == "1":
+        print(f"  You steel yourself and prepare for battle!")
         luck = StatusEffect.LUCKY in player.status_effects
-        if player.has("Ironbark Shield") or player.has("Guardian's Mantle"):
-            print("  Your shield absorbs the blow!")
+        shield = player.has("Ironbark Shield") or player.has("Guardian's Mantle")
+        
+        if shield:
+            print(f"  {Fore.GREEN}Your shield absorbs their initial assault!{Style.RESET_ALL}")
             if player.has("Ironbark Shield"):
                 player.remove_item("Ironbark Shield")
-            print(f"  You defeat the {noun} with no losses.")
+                print("  The shield splinters but saves your life!")
+            print(f"  You counter-attack and defeat the {noun}!")
+            # Small reward for skilled victory
+            if random.random() < 0.3:
+                loot = random.choice(["Healer's Salve", "Morale Charm"])
+                player.add_item(loot)
+                print(f"  You find {loot} among their belongings.")
         elif random.random() < (0.65 if luck else 0.55):
-            print(f"  You fight bravely and defeat the {noun}!")
+            print(f"  {Fore.YELLOW}You fight bravely and drive them off!{Style.RESET_ALL}")
             player.adjust_supply("food", -3)
+            player.damage(random.randint(5, 12))
+            print("  Victory, but at a cost.")
         else:
-            print(f"  The {noun} overpower you!")
+            print(f"  {Fore.RED}The {noun} overwhelm you!{Style.RESET_ALL}")
             player.damage(25)
             player.adjust_supply("food", -5)
+            player.morale -= 10
+            print("  You barely escape with your life.")
         player.combats_survived += 1
         player.try_unlock("first_blood")
+    
     elif choice == "2":
+        print(f"  You turn and run!")
         if random.random() < 0.5:
-            print("  You escape, but drop some supplies!")
+            print(f"  {Fore.GREEN}You escape cleanly!{Style.RESET_ALL}")
+            print("  Though you drop some supplies in your haste.")
             player.adjust_supply("fuel", -4)
         else:
-            print("  You trip while fleeing!")
+            print(f"  {Fore.RED}You stumble while fleeing!{Style.RESET_ALL}")
             player.damage(15)
+            player.morale -= 8
+            print(f"  The {noun} land a few blows before you get away.")
+    
     elif choice == "3":
-        print(f"  You offer supplies. The {noun} accept and leave.")
-        player.adjust_supply("food", -8)
-        player.adjust_supply("water", -5)
+        print(f"  You raise your hands and offer tribute.")
+        print(f"  The {noun} consider your offer...")
+        pause(1.0)
+        if random.random() < 0.7:
+            print(f"  {Fore.CYAN}They accept and let you pass.{Style.RESET_ALL}")
+            player.adjust_supply("food", -8)
+            player.adjust_supply("water", -5)
+            print("  Sometimes gold is cheaper than blood.")
+        else:
+            print(f"  {Fore.RED}They take your supplies AND attack anyway!{Style.RESET_ALL}")
+            player.adjust_supply("food", -5)
+            player.adjust_supply("water", -3)
+            player.damage(15)
+            print("  Treachery! You barely fight them off.")
+    
     elif choice == "4":
-        print(f"  {player.companion.name} steps forward!")
-        print(f"  With expert skill, they dispatch the {noun}!")
+        print(f"  You step forward boldly and meet their gaze!")
+        intimidation_bonus = (StatusEffect.INSPIRED in player.status_effects) or (player.health > 80)
+        if random.random() < (0.6 if intimidation_bonus else 0.35):
+            print(f"  {Fore.GREEN}Your presence unnerves them!{Style.RESET_ALL}")
+            print(f"  The {noun} back down and scatter.")
+            player.morale += 15
+            print("  Victory without bloodshed!")
+        else:
+            print(f"  {Fore.YELLOW}They laugh at your bravado!{Style.RESET_ALL}")
+            print(f"  Enraged, they attack with fury!")
+            player.damage(20)
+            player.morale -= 5
+    
+    elif choice in ["5", "6"] and player.companion and player.companion.bonus_type == "combat" and choice == "5":
+        print(f"  {player.companion.name} steps forward with confidence!")
+        print(f"  {Fore.GREEN}With expert martial skill, they dispatch the {noun}!{Style.RESET_ALL}")
+        print("  'That was almost too easy,' they say, wiping their blade.")
         player.combats_survived += 1
         player.try_unlock("first_blood")
+        player.morale += 10
+        # Companion finds something
+        if random.random() < 0.4:
+            player.adjust_supply("food", 5)
+            print(f"  {player.companion.name} salvages supplies from the encounter.")
+    
+    else:
+        # Signal flare option
+        if player.has("Signal-Flare"):
+            print("  You fire the Signal-Flare into the air!")
+            print(f"  {Fore.CYAN}The bright explosion startles the {noun}!{Style.RESET_ALL}")
+            player.remove_item("Signal-Flare")
+            if random.random() < 0.8:
+                print(f"  They flee, thinking reinforcements are coming!")
+                player.morale += 5
+            else:
+                print(f"  Some flee, but the bravest charge!")
+                player.damage(12)
+                print("  You drive off the remainder.")
+                player.combats_survived += 1
 
 
 def _event_river(player: Player) -> None:
@@ -1380,37 +1995,83 @@ def _event_river(player: Player) -> None:
 def _event_storm(player: Player) -> None:
     print(colorize_ascii(ASCII_STORM, Fore.RED))
     labels = {
-        ThemeId.DESERT: "A violent sandstorm",
-        ThemeId.SPACE: "A solar flare",
-        ThemeId.MIST: "An arcane tempest",
-        ThemeId.TIME: "A chrono-quake",
-        ThemeId.CYBER: "A system-wide power surge",
+        ThemeId.DESERT: ("A violent sandstorm", "Sand whips around you, reducing visibility to nothing."),
+        ThemeId.SPACE: ("A solar flare", "Radiation warnings blare as stellar plasma surges toward your ship."),
+        ThemeId.MIST: ("An arcane tempest", "Reality itself seems to buckle under eldritch winds."),
+        ThemeId.TIME: ("A chrono-quake", "Time ripples and stutters. Past and future collide."),
+        ThemeId.CYBER: ("A system-wide power surge", "The grid overloads. Sparks rain from damaged nodes."),
     }
-    storm = labels.get(player.theme.id, "A storm")
+    storm, description = labels.get(player.theme.id, ("A storm", "Nature's fury is upon you."))
     print(f"  {Fore.YELLOW}{storm} strikes!{Style.RESET_ALL}")
-    print("  1. Take shelter and wait it out")
-    print("  2. Push through")
+    print(f"  {description}")
+    print()
+    print("  How will you handle this?")
+    print("  1. Take shelter and wait it out (safe but costly)")
+    print("  2. Push through quickly (risky but saves supplies)")
+    print("  3. Use the storm as cover to gain distance")
     if player.has("Stormglass Vial"):
-        print(f"  3. Use your Stormglass Vial to navigate safely")
-    choice = get_choice("  > ", range(1, 4 if player.has("Stormglass Vial") else 3))
+        print(f"  4. Use your Stormglass Vial to navigate safely")
+    if player.companion:
+        print(f"  {5 if player.has('Stormglass Vial') else 4}. Trust {player.companion.name}'s instincts")
+    
+    max_choice = 5 if (player.has('Stormglass Vial') and player.companion) else (4 if (player.has('Stormglass Vial') or player.companion) else 3)
+    choice = get_choice("  > ", range(1, max_choice + 1))
 
     if choice == "1":
-        print("  You hunker down. Supplies are used but you stay safe.")
+        print("  You hunker down and weather the storm.")
+        print(f"  {Fore.CYAN}Time passes slowly. Supplies dwindle.{Style.RESET_ALL}")
         player.adjust_supply("food", -3)
         player.adjust_supply("water", -2)
+        print("  Finally, the storm breaks. You emerge unscathed.")
+    
     elif choice == "2":
+        print("  You grit your teeth and press forward into the maelstrom!")
         if random.random() < 0.4:
-            print("  You push through with minor losses!")
+            print(f"  {Fore.GREEN}Through sheer determination, you push through!{Style.RESET_ALL}")
             player.adjust_supply("fuel", -2)
-            player.try_unlock("weather_master")
+            print("  You emerge battered but alive, having saved time.")
+            player.distance_travelled += random.randint(5, 10)
+            player.try_unlock("storm_chaser")
         else:
-            print("  The storm batters you badly!")
+            print(f"  {Fore.RED}The storm batters you mercilessly!{Style.RESET_ALL}")
             player.damage(20)
             player.adjust_supply("food", -4)
             player.adjust_supply("water", -3)
+            print("  You survive, but barely. The cost was steep.")
+    
     elif choice == "3":
-        print("  The Stormglass Vial guides you through safely!")
-        player.try_unlock("weather_master")
+        print("  You decide to use the chaos to your advantage!")
+        if random.random() < 0.5:
+            print(f"  {Fore.GREEN}The reduced visibility helps you avoid detection!{Style.RESET_ALL}")
+            player.distance_travelled += random.randint(10, 20)
+            player.morale += 10
+            print("  You make excellent progress under cover of the storm!")
+            player.try_unlock("storm_chaser")
+        else:
+            print(f"  {Fore.YELLOW}You get turned around in the chaos!{Style.RESET_ALL}")
+            player.distance_travelled -= random.randint(5, 10)
+            player.damage(10)
+            print("  When the storm clears, you realize you've gone the wrong way.")
+    
+    elif choice == "4" and player.has("Stormglass Vial"):
+        print("  The Stormglass Vial pulses with an inner light...")
+        print(f"  {Fore.CYAN}It guides you through the safest path!{Style.RESET_ALL}")
+        player.distance_travelled += random.randint(8, 15)
+        print("  You navigate the storm like a seasoned expert!")
+        player.try_unlock("storm_chaser")
+    
+    else:
+        # Companion option
+        print(f"  You follow {player.companion.name}'s lead through the storm.")
+        if player.companion.bonus_type == "scout":
+            print(f"  {Fore.GREEN}Their pathfinding skills prove invaluable!{Style.RESET_ALL}")
+            player.distance_travelled += random.randint(10, 15)
+            player.adjust_supply("food", -1)
+        else:
+            print(f"  {Fore.CYAN}Together, you weather it better than alone.{Style.RESET_ALL}")
+            player.adjust_supply("food", -2)
+            player.adjust_supply("water", -1)
+            player.morale += 5
 
 
 def _event_wildlife(player: Player) -> None:
@@ -1769,6 +2430,89 @@ def _event_weather_shift(player: Player) -> None:
             player.morale -= 3
 
 
+def _event_generated_scenario(player: Player) -> None:
+    """AI-generated scenario using Ollama with fallback templates - interactive with dynamic outcomes!"""
+    print()
+    scenario_type = random.choice(["general", "danger", "mystery", "discovery", "encounter"])
+    
+    # Try up to 5 times to get a unique scenario
+    max_attempts = 5
+    scenario = None
+    for attempt in range(max_attempts):
+        candidate = generate_ai_scenario(player.theme.id, scenario_type, player.seen_scenarios)
+        if candidate not in player.seen_scenarios:
+            scenario = candidate
+            player.seen_scenarios.add(scenario)  # Track this scenario
+            break
+    
+    # If all attempts failed (unlikely), use the last one anyway
+    if scenario is None:
+        scenario = generate_ai_scenario(player.theme.id, scenario_type, player.seen_scenarios)
+    
+    print(f"  {Fore.MAGENTA}{scenario}{Style.RESET_ALL}")
+    print()
+    
+    # More contextual responses based on scenario type
+    response_options = {
+        "danger": [
+            ("1. Face the danger head-on", lambda p: (
+                (p.damage(random.randint(10, 20)) if random.random() < 0.4 else (p.morale + random.randint(5, 15))),
+                print(f"  {Fore.YELLOW}You push through the danger!{Style.RESET_ALL}") if random.random() > 0.4 else print(f"  {Fore.RED}The danger takes its toll...{Style.RESET_ALL}")
+            )),
+            ("2. Find a clever way around it", lambda p: (p.morale + random.randint(8, 15), p.distance_travelled + random.randint(5, 10))),
+            ("3. Wait it out cautiously", lambda p: (p.adjust_supply("food", -2), print("  You weather the situation. Supplies dwindle."))),
+            ("4. Use what you have to escape", lambda p: (p.distance_travelled + random.randint(15, 25), print("  Quick thinking lets you slip away!"))),
+        ],
+        "mystery": [
+            ("1. Investigate the mystery thoroughly", lambda p: (p.morale + random.randint(5, 12), print("  Understanding brings peace of mind."))),
+            ("2. Leave it unsolved and move on", lambda p: (p.morale - random.randint(2, 5), print("  The unanswered question nags at you."))),
+            ("3. Share what you learn with others", lambda p: (p.morale + random.randint(3, 8), print("  Knowledge is power."))),
+            ("4. Use it to your advantage", lambda p: (p.distance_travelled + random.randint(10, 20), p.morale + random.randint(5, 10))),
+        ],
+        "discovery": [
+            ("1. Claim it for yourself", lambda p: (p.add_item(random.choice(["Healer's Salve", "Morale Charm"])) if len(p.inventory) < 8 else None, print("  A valuable find!"))),
+            ("2. Share it and gain favor", lambda p: (p.morale + random.randint(8, 15), print("  Generosity earns respect."))),
+            ("3. Study it carefully", lambda p: (p.morale + random.randint(3, 8), print("  You learn something valuable."))),
+            ("4. Leave it for someone else", lambda p: (p.morale - random.randint(1, 3), print("  Restraint is sometimes harder than taking."))),
+        ],
+        "encounter": [
+            ("1. Approach peacefully", lambda p: (p.morale + random.randint(5, 10), print("  A friendly encounter brightens your day."))),
+            ("2. Keep your distance", lambda p: (p.morale - random.randint(1, 3), print("  Caution, but also missed opportunity."))),
+            ("3. Try to learn from them", lambda p: (p.morale + random.randint(8, 12), print("  Knowledge gained from an unexpected source."))),
+            ("4. Challenge them", lambda p: (p.damage(random.randint(8, 15)), print("  The encounter turns hostile."))),
+        ],
+        "general": [
+            ("1. Investigate carefully and take your time", lambda p: (
+                (p.add_item(random.choice(["Healer's Salve", "Morale Charm", "Signal-Flare"])) if random.random() < 0.6 and len(p.inventory) < 8 else None, print("  Your careful observation pays off!")) if random.random() < 0.6 else print("  Your caution proves wise."),
+                p.morale + random.randint(1, 3)
+            )),
+            ("2. Act boldly and seize the moment", lambda p: (
+                (p.distance_travelled + random.randint(10, 20), p.morale + random.randint(10, 20), print("  Fortune favors the bold!")) if random.random() < 0.5 else (p.damage(random.randint(10, 18)), print("  Bold action backfires!")),
+            )),
+            ("3. Proceed cautiously, staying alert", lambda p: (p.morale + random.randint(5, 10), print("  A balanced approach serves you well."))),
+            ("4. Avoid involvement and move on quickly", lambda p: (p.morale - random.randint(1, 3), print("  You slip away unnoticed."))),
+        ],
+    }
+    
+    # Use scenario-specific responses if available, otherwise use general
+    options = response_options.get(scenario_type, response_options["general"])
+    
+    print("  How do you respond?")
+    for idx, (text, _) in enumerate(options, 1):
+        print(f"  {text}")
+    
+    choice = get_choice("  > ", range(1, len(options) + 1))
+    
+    # Execute outcome
+    try:
+        _, outcome = options[int(choice) - 1]
+        outcome(player)
+    except (IndexError, ValueError):
+        print("  You take a moment to collect yourself.")
+    
+    player.try_unlock("explorer")
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Mini-games
 # ──────────────────────────────────────────────────────────────────────
@@ -1834,6 +2578,7 @@ EVENT_POOL: list[tuple[Callable[[Player], None], int]] = [
     (_event_companion,      5),
     (_event_ambush_elite,   4),
     (_event_weather_shift,  6),
+    (_event_generated_scenario, 5),
 ]
 
 
@@ -1852,6 +2597,9 @@ def trigger_random_event(player: Player) -> None:
     log_game("event_start", {"event": event_name, "day": player.days})
     chosen(player)
     hr("~")
+    pause_for_action()
+    if not TEST_MODE:
+        clear_screen()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1887,8 +2635,10 @@ def use_item(player: Player) -> None:
     if choice == "0":
         return
     selected = usable[int(choice) - 1]
+    print()  # Blank line for separation
     consumables[selected](player)
     player.remove_item(selected)
+    pause_for_action(1.0)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1925,7 +2675,9 @@ def craft_menu(player: Player) -> None:
     player.remove_item(b)
     player.add_item(result)
     player.try_unlock("crafter")
+    print()  # Blank line for separation
     print(f"  {Fore.GREEN}Crafted {result}!{Style.RESET_ALL}")
+    pause_for_action(1.0)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1973,35 +2725,61 @@ def daily_action(player: Player) -> None:
         GAME_LOGGER.log_choice("daily_action", action_names.get(choice, choice), {"day": player.days})
 
     if choice == "1":
+        # Travel action with narrative flavor
+        travel_flavor = [
+            "You press onward, the path stretching endlessly ahead.",
+            "Each step brings you closer to your destination.",
+            "The journey continues, one determined stride at a time.",
+            "You forge ahead through the unforgiving landscape.",
+            "With renewed purpose, you continue your trek.",
+        ]
+        print(f"  {random.choice(travel_flavor)}")
+        
         bonus = 10 if (player.has("Wanderer's Compass") or player.has("Guardian's Mantle")) else 0
         if player.companion and player.companion.bonus_type == "scout":
             bonus += player.companion.bonus_value
         lo, hi = t.daily_distance
         dist = random.randint(lo, hi) + bonus
-        # weather modifiers
+        
+        # weather modifiers with flavor
         if player.weather == Weather.STORM:
             dist = max(5, dist - 15)
             print(f"  {Fore.YELLOW}Storm conditions slow your progress!{Style.RESET_ALL}")
+            print("  Wind and chaos make every step a battle.")
         elif player.weather == Weather.FOG:
             dist = max(5, dist - 8)
             print(f"  {Fore.YELLOW}Fog makes navigation difficult.{Style.RESET_ALL}")
+            print("  Visibility is nearly zero - you feel your way forward.")
         elif player.weather == Weather.CLEAR:
             dist += 5
+            print(f"  {Fore.CYAN}Clear skies speed your journey!{Style.RESET_ALL}")
+        
         # night travel
         if player.time_of_day == TimeOfDay.NIGHT:
             player.try_unlock("night_owl")
             if not player.has("Eldritch Lantern") and not player.has("Ember Stone"):
                 dist = max(5, dist - 10)
                 print(f"  {Fore.YELLOW}Darkness slows your travel.{Style.RESET_ALL}")
+                print("  You navigate by moonlight and instinct alone.")
+        
         # inspired bonus
         if StatusEffect.INSPIRED in player.status_effects:
             dist += 8
             print(f"  {Fore.GREEN}Inspiration drives you forward!{Style.RESET_ALL}")
+            print("  Your spirits are high - nothing can stop you now!")
 
         player.distance_travelled += dist
         player.consume_daily()
         player.supplies["fuel"] = max(0, player.supplies["fuel"] - 1)
-        print(f"\n  You travel {dist} {t.distance_unit}.")
+        
+        # Add variety to distance announcement
+        distance_messages = [
+            f"  You cover {dist} {t.distance_unit}.",
+            f"  Progress: {dist} {t.distance_unit} traveled.",
+            f"  {dist} {t.distance_unit} lie behind you now.",
+            f"  Another {dist} {t.distance_unit} closer to your goal.",
+        ]
+        print(f"\n{random.choice(distance_messages)}")
 
         # Morale drift toward 50
         if player.morale > 50:
@@ -2015,46 +2793,113 @@ def daily_action(player: Player) -> None:
             trigger_random_event(player)
 
     elif choice == "2":
+        # Rest action with narrative flavor
+        rest_flavor = [
+            "You find shelter and allow exhaustion to wash over you.",
+            "Setting up a makeshift camp, you finally rest your weary bones.",
+            "The weight of the journey lifts as you settle down to recover.",
+            "You take refuge from the elements and tend to your wounds.",
+            "For a moment, the world can wait - you need this respite.",
+        ]
+        print(f"  {random.choice(rest_flavor)}")
+        
         heal = random.randint(8, 18)
         if player.companion and player.companion.bonus_type == "health":
             heal += player.companion.bonus_value
+            print(f"  {player.companion.name} helps treat your injuries.")
+        
         player.heal(heal)
         player.consume_daily()
+        
+        # Add some flavor to healing outcome
+        if heal > 15:
+            print(f"  {Fore.GREEN}You sleep deeply and wake refreshed. (+{heal} health){Style.RESET_ALL}")
+        elif heal > 10:
+            print(f"  {Fore.CYAN}Rest does you good. (+{heal} health){Style.RESET_ALL}")
+        else:
+            print(f"  {Fore.YELLOW}A brief rest helps somewhat. (+{heal} health){Style.RESET_ALL}")
+        
         # remove poison on rest
         if StatusEffect.POISONED in player.status_effects:
             if random.random() < 0.5:
                 del player.status_effects[StatusEffect.POISONED]
                 print(f"  {Fore.GREEN}The poison fades during your rest!{Style.RESET_ALL}")
+                print("  Your body fights off the toxins naturally.")
+            else:
+                print(f"  {Fore.YELLOW}The poison still courses through you...{Style.RESET_ALL}")
 
     elif choice == "3":
+        # Scout action with narrative flavor
+        scout_flavor = [
+            "You pause to survey the path ahead carefully.",
+            "Climbing to higher ground, you scan the horizon.",
+            "You take time to study your surroundings thoroughly.",
+            "With keen eyes, you search for opportunities and dangers alike.",
+            "You venture off the main path to explore nearby terrain.",
+        ]
+        print(f"  {random.choice(scout_flavor)}")
+        
         player.scout_count += 1
         player.consume_daily()
         if player.scout_count >= 5:
             player.try_unlock("explorer")
+        
         scout_bonus = player.companion and player.companion.bonus_type == "scout"
+        if scout_bonus:
+            print(f"  {player.companion.name}'s expertise guides your search.")
+        
         chance = 0.65 if scout_bonus else 0.55
         if random.random() < chance:
-            print("\n  Your scouting reveals something interesting!")
+            discovery_text = [
+                "Your keen observation pays off!",
+                "Something catches your eye...",
+                "Your scouting reveals an unexpected find!",
+                "The detour proves worthwhile!",
+            ]
+            print(f"\n  {Fore.CYAN}{random.choice(discovery_text)}{Style.RESET_ALL}")
             trigger_random_event(player)
         else:
-            print("\n  You scout the area but find nothing of note.")
+            null_results = [
+                "You scout the area but find nothing of note.",
+                "The reconnaissance yields no significant findings.",
+                "Despite your thorough search, nothing stands out.",
+                "This stretch of the journey appears unremarkable.",
+            ]
+            print(f"\n  {random.choice(null_results)}")
             if random.random() < 0.3:
-                print("  However, you spot a safe route ahead.")
-                player.distance_travelled += random.randint(5, 15)
+                shortcut_messages = [
+                    "However, you spot a safe shortcut ahead.",
+                    "Your efforts reveal an efficient alternate route.",
+                    "You identify a path that will save time.",
+                    "At least you found a better way forward.",
+                ]
+                print(f"  {random.choice(shortcut_messages)}")
+                shortcut_dist = random.randint(5, 15)
+                player.distance_travelled += shortcut_dist
+                print(f"  You gain {shortcut_dist} {player.theme.distance_unit}!")
 
     elif choice == "4":
         use_item(player)
+        if not TEST_MODE:
+            clear_screen()
         return  # using item doesn't cost a day
 
     elif choice == "5":
         craft_menu(player)
+        if not TEST_MODE:
+            clear_screen()
         return  # crafting doesn't cost a day
 
     elif choice == "6":
         print_status(player)
         daily_action(player)
+        if not TEST_MODE:
+            clear_screen()
         return  # viewing status doesn't cost a day
 
+    pause_for_action()
+    if not TEST_MODE:
+        clear_screen()
     player.days += 1
     advance_time_of_day(player)
     advance_weather(player)
@@ -2160,6 +3005,7 @@ def final_encounter(player: Player) -> None:
             player.heal(15)
 
     hr("=")
+    pause_for_action(1.5)
 
 
 def show_ending(player: Player) -> None:
@@ -2173,9 +3019,9 @@ def show_ending(player: Player) -> None:
     if player.health <= 0:
         print(colorize_ascii(ASCII_GAMEOVER, Fore.RED))
         slow_print(wrapped(
-            f"  {player.name}'s journey ends in tragedy.  "
+            f"  Your journey ends in tragedy.  "
             f"The {t.distance_unit} stretched too far, and the "
-            f"perils of the road claimed another soul.  "
+            f"perils of the road claimed you.  "
             f"Perhaps the next traveler will fare better..."
         ), delay=0.015)
         if GAME_LOGGER:
@@ -2186,10 +3032,10 @@ def show_ending(player: Player) -> None:
         # PERFECT ENDING
         print(colorize_ascii(ASCII_VICTORY, Fore.GREEN))
         slow_print(wrapped(
-            f"  A LEGENDARY victory!  {player.name} completes the journey "
+            f"  A LEGENDARY victory!  You complete the journey "
             f"in peak condition with a rescue signal blazing.  "
             f"Songs will echo through the ages about this triumph. "
-            f"The world will never forget this name."
+            f"The world will never forget your name."
         ), delay=0.015)
         player.try_unlock("best_ending")
         player.try_unlock("flawless")
@@ -2200,9 +3046,9 @@ def show_ending(player: Player) -> None:
     elif player.distance_travelled >= t.total_distance and best_signal:
         print(colorize_ascii(ASCII_VICTORY, Fore.GREEN))
         slow_print(wrapped(
-            f"  Against all odds, {player.name} completes the journey!  "
+            f"  Against all odds, you complete the journey!  "
             f"Using the signal, a rescue party is summoned.  "
-            f"Songs will be sung of this triumph for generations."
+            f"Songs will be sung of your triumph for generations."
         ), delay=0.015)
         player.try_unlock("best_ending")
         ending_type = "good_signal"
@@ -2212,7 +3058,7 @@ def show_ending(player: Player) -> None:
     elif player.distance_travelled >= t.total_distance and player.health >= 80:
         print(colorize_ascii(ASCII_VICTORY, Fore.GREEN))
         slow_print(wrapped(
-            f"  {player.name} arrives strong and healthy!  "
+            f"  You arrive strong and healthy!  "
             f"Though no signal was sent, the destination is reached.  "
             f"A quiet victory, but a victory nonetheless."
         ), delay=0.015)
@@ -2224,7 +3070,7 @@ def show_ending(player: Player) -> None:
     elif player.distance_travelled >= t.total_distance:
         print(colorize_ascii(ASCII_VICTORY, Fore.GREEN))
         slow_print(wrapped(
-            f"  {player.name} reaches the destination battered but alive.  "
+            f"  You reach the destination battered but alive.  "
             f"Without a signal, survival is uncertain, "
             f"but the journey itself was the true reward."
         ), delay=0.015)
@@ -2235,7 +3081,7 @@ def show_ending(player: Player) -> None:
     else:
         print(colorize_ascii(ASCII_GAMEOVER, Fore.RED))
         slow_print(wrapped(
-            f"  {player.name} could not complete the journey.  "
+            f"  You could not complete the journey.  "
             f"Only {player.distance_travelled} of {t.total_distance} "
             f"{t.distance_unit} were covered.  "
             f"The wilds claim another unfinished story."
@@ -2280,8 +3126,14 @@ def choose_theme() -> Theme:
         print(f"  {idx}. {Fore.GREEN}{t.name}{Style.RESET_ALL}")
         print(f"     {t.tagline}")
     print()
-    choice = get_choice("  Enter number (1-5): ", range(1, len(theme_list) + 1))
-    return theme_list[int(choice) - 1]
+    choice = get_choice(f"  Enter number (1-{len(theme_list)}): ", range(1, len(theme_list) + 1))
+    selected_theme = theme_list[int(choice) - 1]
+    
+    # If AI-Generated theme selected, let user choose model
+    if selected_theme.id == ThemeId.AI_GENERATED:
+        select_ai_model()
+    
+    return selected_theme
 
 
 def choose_difficulty() -> Difficulty:
@@ -2289,18 +3141,28 @@ def choose_difficulty() -> Difficulty:
     diffs = list(Difficulty)
     for idx, d in enumerate(diffs, 1):
         settings = DIFFICULTY_SETTINGS[d]
-        print(f"  {idx}. {settings['label']}")
+        marker = f" {Fore.GREEN}[DEFAULT]{Style.RESET_ALL}" if d == Difficulty.NORMAL else ""
+        print(f"  {idx}. {settings['label']}{marker}")
     print()
-    choice = get_choice("  Enter number (1-3): ", range(1, len(diffs) + 1))
+    choice = get_choice("  Enter number (1-3, or press Enter for Normal): ", range(1, len(diffs) + 1), allow_empty=True)
+    if not choice:
+        return Difficulty.NORMAL
     return diffs[int(choice) - 1]
 
 
 def introduction(player: Player) -> None:
-    # Color theme art based on theme
-    colored_art = colorize_ascii(player.theme.ascii_art, get_theme_ascii_color(player.theme.id))
+    # Color theme art based on theme (generate dynamically for AI theme)
+    if player.theme.id == ThemeId.AI_GENERATED:
+        ascii_art = generate_ai_ascii_art()
+        colored_art = colorize_ascii(ascii_art, Fore.MAGENTA)
+        intro_text = generate_ai_intro_text()
+    else:
+        colored_art = colorize_ascii(player.theme.ascii_art, get_theme_ascii_color(player.theme.id))
+        intro_text = player.theme.intro_text
+    
     print(colored_art)
     hr()
-    slow_print(wrapped(f"  {player.theme.intro_text}"), delay=0.012)
+    slow_print(wrapped(f"  {intro_text}"), delay=0.012)
     hr()
     print(f"\n  Special item for this theme: "
           f"{Fore.CYAN}{player.theme.special_item}{Style.RESET_ALL}")
@@ -2433,44 +3295,29 @@ def _run_game_loop(max_days: int = 200) -> None:
     print("  A text-based survival journey\n")
     hr()
 
-    try:
-        name = input("  Enter your name: ").strip() or "Adventurer"
-    except (EOFError, KeyboardInterrupt):
-        if GAME_LOGGER:
-            GAME_LOGGER.log_error("UserInterrupt", "User exited during name input")
-        print("\nGoodbye!")
-        return
-    except Exception as e:
-        if GAME_LOGGER:
-            GAME_LOGGER.log_exception(e, context={"stage": "name_input"})
-        print(f"\n{Fore.RED}Error during name input: {e}{Style.RESET_ALL}")
-        return
-
-    print("\n  Enter a seed number to replay a specific journey,")
-    print("  or press Enter for a random adventure.")
-    seed_input = get_choice("  Seed (or Enter): ", [], allow_empty=True)
-    if seed_input.isdigit():
-        seed = int(seed_input)
-    else:
-        seed = random.randint(0, 999_999)
-    random.seed(seed)
-    print(f"  Using seed: {Fore.GREEN}{seed}{Style.RESET_ALL}\n")
-
+    # Start directly with theme selection
     theme = choose_theme()
     difficulty = choose_difficulty()
-    player = Player(name=name, theme=theme, difficulty=difficulty, seed=seed)
+    
+    # Use random seed automatically
+    seed = random.randint(0, 999_999)
+    
+    player = Player(name="You", theme=theme, difficulty=difficulty, seed=seed)
     
     # Log game start
     if GAME_LOGGER:
         GAME_LOGGER.log_event("game_start", {
-            "player_name": name,
             "theme": theme.name,
             "difficulty": difficulty.value,
             "seed": seed,
         })
         GAME_LOGGER.log_player_state(player, "initial")
     
+    # Show introduction (with unseeded random for variety in ASCII art)
     introduction(player)
+    
+    # NOW set the seed for gameplay randomness (reproducible events)
+    random.seed(seed)
 
     day_count = 0
     while player.distance_travelled < theme.total_distance and player.is_alive():
@@ -2590,36 +3437,61 @@ def main() -> None:
     if args.test_all:
         TEST_MODE = True
         results = []
-        for theme_idx in range(1, 6):
-            for diff_idx in range(1, 4):
-                print("\n" + "=" * WIDTH)
-                print(f"  TEST: Theme {theme_idx}, Difficulty {diff_idx}, Seed {args.seed}")
-                print("=" * WIDTH)
-                # Build inputs: name, seed, theme, difficulty, enter
-                inputs = ["TestBot", str(args.seed), str(theme_idx), str(diff_idx), ""]
-                auto = AutoPlayer(strategy="scripted", inputs=inputs, seed=args.seed)
-                with auto.activate():
-                    auto.strategy = "random"  # after scripted intro
-                    auto.idx = 0
-                    # re-stock scripted inputs
-                    auto.input_queue = inputs
-                    auto.strategy = "scripted"
-                    try:
-                        _run_game_loop(max_days=args.max_days)
-                    except SystemExit:
-                        pass
-                results.append({
-                    "theme": theme_idx,
-                    "difficulty": diff_idx,
-                    "inputs": len(auto.log),
-                })
-                print(f"  → {len(auto.log)} inputs simulated")
+        num_iterations = 3  # Run each theme/diff combo 3 times = 6 themes * 3 diff * 3 iter = 54 tests
+        test_num = 0
+        
+        for iteration in range(num_iterations):
+            for theme_idx in range(1, 7):  # All 6 themes including AI-Generated
+                for diff_idx in range(1, 4):  # 3 difficulties
+                    test_num += 1
+                    seed = args.seed + test_num  # Vary seed for each test
+                    
+                    print("\n" + "=" * WIDTH)
+                    print(f"  TEST {test_num}/54: Theme {theme_idx}, Difficulty {diff_idx}, Seed {seed}")
+                    print("=" * WIDTH)
+                    
+                    # Build inputs: name, seed, theme, difficulty
+                    # For AI theme (6), add model selection (2 = gemma3:4b)
+                    if theme_idx == 6:
+                        inputs = ["TestBot", str(seed), str(theme_idx), "2", str(diff_idx), ""]
+                    else:
+                        inputs = ["TestBot", str(seed), str(theme_idx), str(diff_idx), ""]
+                    
+                    auto = AutoPlayer(strategy="scripted", inputs=inputs, seed=seed)
+                    with auto.activate():
+                        auto.strategy = "random"  # after scripted intro
+                        auto.idx = 0
+                        # re-stock scripted inputs
+                        auto.input_queue = inputs
+                        auto.strategy = "scripted"
+                        try:
+                            _run_game_loop(max_days=args.max_days)
+                        except SystemExit:
+                            pass
+                    
+                    results.append({
+                        "test_num": test_num,
+                        "theme": theme_idx,
+                        "difficulty": diff_idx,
+                        "inputs": len(auto.log),
+                        "seed": seed,
+                    })
+                    print(f"  → {len(auto.log)} inputs simulated")
 
         print("\n" + "=" * WIDTH)
-        print("  ALL TESTS COMPLETE")
+        print(f"  ALL TESTS COMPLETE ({len(results)} total)")
         print("=" * WIDTH)
-        for r in results:
-            print(f"  Theme {r['theme']} / Diff {r['difficulty']}: {r['inputs']} inputs")
+        
+        # Summary by theme
+        theme_names = {
+            1: "Desert", 2: "Space", 3: "Mist", 4: "Time", 5: "Cyber", 6: "AI-Gen"
+        }
+        for theme_id in range(1, 7):
+            theme_results = [r for r in results if r["theme"] == theme_id]
+            if theme_results:
+                avg_inputs = sum(r["inputs"] for r in theme_results) / len(theme_results)
+                print(f"  {theme_names[theme_id]}: {len(theme_results)} tests, avg {avg_inputs:.0f} inputs")
+        
         return
 
     # Normal interactive mode
@@ -2627,4 +3499,17 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # 🧠 AUTO-TUNING: Game learns from gameplay and improves automatically
+    # Runs analysis every 10 sessions and applies balance fixes
+    # To disable: comment out the line below
+    # To adjust frequency: change min_sessions parameter
+    try:
+        from auto_tune import check_and_apply_auto_tuning
+        check_and_apply_auto_tuning(min_sessions=10, silent=False)
+    except ImportError:
+        pass  # auto_tune.py not available - skip
+    except Exception as e:
+        # Don't crash game if auto-tuning fails
+        print(f"⚠️  Auto-tuning skipped: {e}")
+    
     main()
