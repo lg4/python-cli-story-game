@@ -238,6 +238,119 @@ class GameTuner:
                 f"→ Consider increasing travel speed or reducing distance"
             )
 
+    def analyze_damage_balance(self, sessions: list[dict[str, Any]]) -> None:
+        """Analyze if damage_mult per difficulty needs adjustment."""
+        difficulties = defaultdict(lambda: {"deaths": 0, "avg_health_at_death": [], "total_games": 0})
+        
+        for s in sessions:
+            diff = s.get("difficulty")
+            if not diff:
+                continue
+                
+            difficulties[diff]["total_games"] += 1
+            
+            if s["outcome"] == "death":
+                difficulties[diff]["deaths"] += 1
+                if s.get("final_health") is not None:
+                    difficulties[diff]["avg_health_at_death"].append(s["final_health"])
+        
+        for diff, data in difficulties.items():
+            if data["total_games"] < self.min_sessions:
+                continue
+            
+            death_rate = data["deaths"] / data["total_games"]
+            
+            # Check if deaths are too frequent or health drops too fast
+            if diff == "easy" and death_rate > 0.60:
+                # Easy mode too deadly
+                mult_key = f"difficulty_{diff}_damage_reduction"
+                self.adjustments[mult_key] = 0.8  # 20% less damage
+                self.insights.append(
+                    f"📊 {diff.capitalize()} mode: {death_rate*100:.0f}% death rate "
+                    f"→ Reduce damage taken by 20%"
+                )
+            elif diff == "normal" and death_rate > 0.75:
+                # Normal too punishing
+                mult_key = f"difficulty_{diff}_damage_reduction"
+                self.adjustments[mult_key] = 0.9  # 10% less damage
+                self.insights.append(
+                    f"📊 {diff.capitalize()} mode: {death_rate*100:.0f}% death rate "
+                    f"→ Reduce damage taken by 10%"
+                )
+            elif diff == "hard" and death_rate > 0.90:
+                # Hard mode is impossible
+                mult_key = f"difficulty_{diff}_damage_reduction"
+                self.adjustments[mult_key] = 0.85  # 15% less damage
+                self.insights.append(
+                    f"📊 {diff.capitalize()} mode: {death_rate*100:.0f}% death rate "
+                    f"→ Reduce damage taken by 15%"
+                )
+
+    def analyze_event_rates(self, sessions: list[dict[str, Any]]) -> None:
+        """Analyze if event_chance per difficulty needs adjustment."""
+        difficulties = defaultdict(lambda: {"events": 0, "days": 0})
+        
+        for s in sessions:
+            diff = s.get("difficulty")
+            if not diff:
+                continue
+            
+            event_count = len([e for e in s["events"] if e["type"] == "event_start"])
+            difficulties[diff]["events"] += event_count
+            difficulties[diff]["days"] += s.get("final_day", 0)
+        
+        for diff, data in difficulties.items():
+            if data["days"] < 50:  # Need enough gameplay days
+                continue
+            
+            events_per_day = data["events"] / data["days"] if data["days"] > 0 else 0
+            
+            # Target event rates: Easy 0.30, Normal 0.40, Hard 0.55
+            target_rates = {"easy": 0.30, "normal": 0.40, "hard": 0.55}
+            target = target_rates.get(diff, 0.40)
+            
+            # If event rate is significantly off (>30% deviation)
+            deviation = abs(events_per_day - target) / target
+            if deviation > 0.30:
+                adjustment = target / events_per_day if events_per_day > 0 else 1.0
+                mult_key = f"difficulty_{diff}_event_chance"
+                self.adjustments[mult_key] = adjustment
+                direction = "Increase" if adjustment > 1.0 else "Decrease"
+                self.insights.append(
+                    f"📊 {diff.capitalize()} mode: {events_per_day:.2f} events/day "
+                    f"(target {target:.2f}) → {direction} event rate by {abs(1-adjustment)*100:.0f}%"
+                )
+
+    def analyze_health_survivability(self, sessions: list[dict[str, Any]]) -> None:
+        """Analyze if initial health pool needs adjustment."""
+        early_deaths = []  # Deaths before day 15
+        
+        for s in sessions:
+            if s["outcome"] == "death" and s.get("death_day"):
+                if s["death_day"] < 15:
+                    early_deaths.append({
+                        "day": s["death_day"],
+                        "health": s.get("final_health", 0),
+                        "cause": s.get("death_cause")
+                    })
+        
+        if len(early_deaths) >= self.min_sessions:
+            # Many early deaths - might need more starting health
+            avg_early_death_day = sum(d["day"] for d in early_deaths) / len(early_deaths)
+            
+            if avg_early_death_day < 10:
+                self.adjustments["initial_health_multiplier"] = 1.2  # 20% more health
+                self.insights.append(
+                    f"⚠️  {len(early_deaths)} deaths before day 15 "
+                    f"(avg day {avg_early_death_day:.1f}) → Increase starting health by 20%"
+                )
+            elif avg_early_death_day < 12:
+                self.adjustments["initial_health_multiplier"] = 1.1  # 10% more health
+                self.insights.append(
+                    f"⚠️  {len(early_deaths)} deaths before day 15 "
+                    f"(avg day {avg_early_death_day:.1f}) → Increase starting health by 10%"
+                )
+
     def generate_report(self) -> str:
         """Generate a human-readable tuning report."""
         report = []
@@ -293,7 +406,9 @@ class GameTuner:
         self.analyze_theme_balance(sessions)
         self.analyze_difficulty_scaling(sessions)
         self.analyze_death_causes(sessions)
-        self.analyze_event_frequency(sessions)
+        self.analyze_damage_balance(sessions)  # NEW: Tier 1 analysis
+        self.analyze_event_rates(sessions)  # Enhanced with tuning
+        self.analyze_health_survivability(sessions)  # NEW: Tier 1 analysis
         self.analyze_progression_pacing(sessions)
 
         # Show report

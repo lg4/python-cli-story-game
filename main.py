@@ -1578,6 +1578,12 @@ class Player:
             mult *= get_tuned_value(diff_key, 1.0)
             
             self.supplies = {k: int(v * mult) for k, v in self.theme.starting_supplies.items()}
+        
+        # Apply initial health tuning
+        health_mult = get_tuned_value("initial_health_multiplier", 1.0)
+        if health_mult != 1.0:
+            self.health = int(self.health * health_mult)
+        
         if not self.achievements:
             self.achievements = _make_achievements()
 
@@ -1613,6 +1619,10 @@ class Player:
         
         # Apply auto-tuning for combat damage
         mult *= get_tuned_value("combat_damage_multiplier", 1.0)
+        
+        # Apply difficulty-specific damage reduction tuning
+        diff_dmg_key = f"difficulty_{self.difficulty.value}_damage_reduction"
+        mult *= get_tuned_value(diff_dmg_key, 1.0)
         
         if StatusEffect.SHIELDED in self.status_effects:
             mult *= 0.5
@@ -2789,6 +2799,11 @@ def daily_action(player: Player) -> None:
 
         # Random event chance (difficulty scaled)
         event_chance = DIFFICULTY_SETTINGS[player.difficulty]["event_chance"]
+        
+        # Apply difficulty-specific event chance tuning
+        event_tuning_key = f"difficulty_{player.difficulty.value}_event_chance"
+        event_chance *= get_tuned_value(event_tuning_key, 1.0)
+        
         if random.random() < event_chance:
             trigger_random_event(player)
 
