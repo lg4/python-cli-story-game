@@ -3139,20 +3139,38 @@ def show_ending(player: Player) -> None:
 # Theme & difficulty selection + intro
 # ──────────────────────────────────────────────────────────────────────
 def choose_theme() -> Theme:
-    print(f"\n  {Fore.CYAN}Choose your adventure:{Style.RESET_ALL}\n")
-    theme_list = list(THEMES.values())
-    for idx, t in enumerate(theme_list, 1):
-        print(f"  {idx}. {Fore.GREEN}{t.name}{Style.RESET_ALL}")
-        print(f"     {t.tagline}")
-    print()
-    choice = get_choice(f"  Enter number (1-{len(theme_list)}): ", range(1, len(theme_list) + 1))
-    selected_theme = theme_list[int(choice) - 1]
-    
-    # If AI-Generated theme selected, let user choose model
-    if selected_theme.id == ThemeId.AI_GENERATED:
-        select_ai_model()
-    
-    return selected_theme
+    while True:
+        print(f"\n  {Fore.CYAN}Choose your adventure:{Style.RESET_ALL}\n")
+        theme_list = list(THEMES.values())
+        for idx, t in enumerate(theme_list, 1):
+            print(f"  {idx}. {Fore.GREEN}{t.name}{Style.RESET_ALL}")
+            print(f"     {t.tagline}")
+        print()
+        print(f"  {Fore.YELLOW}X. Tune Game{Style.RESET_ALL}")
+        print(f"     Run auto-tuning to balance game difficulty")
+        print()
+        
+        valid_choices = [str(i) for i in range(1, len(theme_list) + 1)] + ['x', 'X']
+        choice = get_choice(f"  Enter number (1-{len(theme_list)}) or X to tune: ", valid_choices)
+        
+        if choice.lower() == 'x':
+            print()
+            hr()
+            success, result = run_auto_tuning()
+            if success:
+                print(f"\n  {Fore.GREEN}✅ Tuning complete! The game will use the new settings.{Style.RESET_ALL}")
+            else:
+                print(f"\n  {Fore.YELLOW}⚠️  Tuning did not complete successfully.{Style.RESET_ALL}")
+            input(f"\n  Press Enter to continue...")
+            continue
+        
+        selected_theme = theme_list[int(choice) - 1]
+        
+        # If AI-Generated theme selected, let user choose model
+        if selected_theme.id == ThemeId.AI_GENERATED:
+            select_ai_model()
+        
+        return selected_theme
 
 
 def choose_difficulty() -> Difficulty:
