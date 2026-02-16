@@ -3466,7 +3466,6 @@ def run_auto_tuning() -> tuple[bool, dict[str, Any]]:
                         inputs = ["TuneBot", str(seed), str(theme_idx), str(diff_idx), ""]
                     
                     try:
-                        from tests.test_auto_improvement import AutoPlayer
                         auto = AutoPlayer(strategy="scripted", inputs=inputs, seed=seed)
                         with auto.activate():
                             auto.strategy = "random"
