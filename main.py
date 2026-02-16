@@ -3481,6 +3481,19 @@ def run_auto_tuning() -> tuple[bool, dict[str, Any]]:
         
         print(f"\n  ✅ All 54 tests completed")
         
+        # Copy temp logs to main logs directory for analysis
+        print(f"\n  📋 Preparing logs for analysis...")
+        main_logs_dir = Path("logs")
+        copied_logs = []
+        try:
+            for log_file in temp_dir.glob("game_*.jsonl"):
+                dest = main_logs_dir / log_file.name
+                shutil.copy2(log_file, dest)
+                copied_logs.append(dest)
+            print(f"  ✓ Copied {len(copied_logs)} log files")
+        except Exception as e:
+            print(f"  ⚠️  Failed to copy logs: {e}")
+        
         # Analyze with game_tuner
         print(f"\n  🔍 Analyzing results...")
         try:
@@ -3490,29 +3503,55 @@ def run_auto_tuning() -> tuple[bool, dict[str, Any]]:
                 env={**dict(os.environ), "PYTHONPATH": str(Path.cwd())},
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',  # Replace undecodable chars instead of failing
                 timeout=30
             )
-            analysis_output = result.stdout + result.stderr
-            print(analysis_output)
+            # Safely concatenate output (handle None cases)
+            stdout_text = result.stdout if result.stdout else ""
+            stderr_text = result.stderr if result.stderr else ""
+            analysis_output = stdout_text + stderr_text
+            
+            if analysis_output:
+                print(analysis_output)
+            else:
+                print("  ⚠️  No output from game_tuner.py")
+                
+            # Check if tuning succeeded
+            if result.returncode != 0:
+                print(f"  ⚠️  game_tuner.py exited with code {result.returncode}")
+        except subprocess.TimeoutExpired:
+            print(f"  ❌ Analysis timed out (took longer than 30 seconds)")
+            TEST_MODE = original_test_mode
+            SLOW_PRINT_DELAY = original_slow_print
+            LOG_DIR = original_log_dir
+            return False, {"error": "timeout"}
         except Exception as e:
             print(f"  ❌ Analysis failed: {e}")
             TEST_MODE = original_test_mode
             SLOW_PRINT_DELAY = original_slow_print
             LOG_DIR = original_log_dir
-            return False, {}
+            return False, {"error": str(e)}
         
         # Restore original settings
         TEST_MODE = original_test_mode
         SLOW_PRINT_DELAY = original_slow_print
         LOG_DIR = original_log_dir
         
-        # Clean up temp directory
+        # Clean up temp directory and copied logs
         print(f"\n  🧹 Cleaning up temporary files...")
         try:
+            # Remove temp directory
             shutil.rmtree(temp_dir)
             print(f"  ✓ Cleaned up {temp_dir}")
+            
+            # Remove copied logs from main logs directory
+            for log_file in copied_logs:
+                if log_file.exists():
+                    log_file.unlink()
+            print(f"  ✓ Removed {len(copied_logs)} temporary log files from logs/")
         except Exception as e:
-            print(f"  ⚠️  Could not clean up temp dir: {e}")
+            print(f"  ⚠️  Could not clean up temp files: {e}")
         
         print("\n" + "="*70)
         print(" AUTO-TUNING COMPLETE!")
@@ -3527,10 +3566,19 @@ def run_auto_tuning() -> tuple[bool, dict[str, Any]]:
         LOG_DIR = original_log_dir
         TEST_MODE = original_test_mode
         SLOW_PRINT_DELAY = original_slow_print
+        
+        # Cleanup on failure
         try:
-            shutil.rmtree(temp_dir)
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
+            # Clean up any copied logs
+            if 'copied_logs' in locals():
+                for log_file in copied_logs:
+                    if log_file.exists():
+                        log_file.unlink()
         except:
             pass
+        
         return False, {"error": str(e)}
 
 
