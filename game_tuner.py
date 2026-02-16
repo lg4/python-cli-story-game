@@ -370,7 +370,11 @@ class GameTuner:
         if self.adjustments:
             report.append(f"\n⚙️  Recommended adjustments ({len(self.adjustments)} parameters):\n")
             for param, value in self.adjustments.items():
-                report.append(f"    {param}: {value}")
+                direction = "↑" if value > 1.0 else "↓"
+                percent_change = abs((value - 1.0) * 100)
+                report.append(f"    {direction} {param}: {value:.3f} ({percent_change:+.1f}%)")
+        else:
+            report.append("\n⚠️  No adjustments needed (prevented circular logic).")
 
         return "\n".join(report)
 
@@ -482,6 +486,52 @@ class GameTuner:
             print(f"   Win rate: {previous_metrics.get('win_rate', 0)*100:.1f}% → {current_metrics.get('win_rate', 0)*100:.1f}%")
         print(f"   The game will automatically load these adjustments on next run.")
 
+    def analyze_tuning_history(self, config_path: Path = Path("game_tuning.json")) -> dict[str, Any]:
+        """Analyze previous tuning iterations to avoid circular logic."""
+        if not config_path.exists():
+            return {}
+        
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except Exception:
+            return {}
+        
+        history = config.get("tuning_history", [])
+        if not history:
+            return {}
+        
+        analysis = {
+            "recent_outcomes": [h.get("outcome") for h in history[-5:]],
+            "oscillating": False,
+            "previous_adjustments": {},
+            "failed_adjustments": {},
+        }
+        
+        # Detect oscillation (alternating improving/regressing)
+        outcomes = analysis["recent_outcomes"]
+        if len(outcomes) >= 3:
+            oscillation_pattern = [
+                (outcomes[i] != outcomes[i+1]) for i in range(len(outcomes)-1)
+            ]
+            if sum(oscillation_pattern) >= 3:  # More than 3 flips = oscillating
+                analysis["oscillating"] = True
+        
+        # Extract previous adjustments and their outcomes
+        for iteration in history[-5:]:
+            adjustments = iteration.get("adjustments", {})
+            outcome = iteration.get("outcome", "unknown")
+            
+            for param, value in adjustments.items():
+                if outcome == "regressing":
+                    analysis["failed_adjustments"][param] = value
+                analysis["previous_adjustments"][param] = {
+                    "value": value,
+                    "outcome": outcome,
+                }
+        
+        return analysis
+
     def run_analysis(self) -> None:
         """Run all analysis steps."""
         sessions = self.load_all_sessions()
@@ -493,6 +543,17 @@ class GameTuner:
             return
 
         print(f"\n📊 Analyzing {len(sessions)} gameplay session(s)...\n")
+        
+        # Check tuning history for potential circular logic
+        history_analysis = self.analyze_tuning_history()
+        if history_analysis:
+            if history_analysis.get("oscillating"):
+                self.insights.append(
+                    "⚠️  OSCILLATION DETECTED: Recent tuning changes are alternating between helping and hurting"
+                )
+                self.insights.append(
+                    "     Consider reducing adjustment magnitude or allowing more stabilization time"
+                )
 
         # Run all analyses
         self.analyze_theme_balance(sessions)
@@ -502,6 +563,26 @@ class GameTuner:
         self.analyze_event_rates(sessions)  # Enhanced with tuning
         self.analyze_health_survivability(sessions)  # NEW: Tier 1 analysis
         self.analyze_progression_pacing(sessions)
+        
+        # Filter out adjustments that failed in recent history
+        if history_analysis and history_analysis.get("failed_adjustments"):
+            failed = history_analysis["failed_adjustments"]
+            print(f"\n🔍 Checking against recent history...\n")
+            removed_count = 0
+            for param in list(self.adjustments.keys()):
+                if param in failed:
+                    failed_value = failed[param]
+                    current_value = self.adjustments[param]
+                    # Don't repeat similar adjustments that failed
+                    if abs(current_value - failed_value) < 0.05:  # Within 5%
+                        self.insights.append(
+                            f"⚠️  SKIPPING: {param} failed recently when set to {failed_value:.2f}, "
+                            f"current suggestion {current_value:.2f} too similar"
+                        )
+                        del self.adjustments[param]
+                        removed_count += 1
+            if removed_count > 0:
+                print(f"  Removed {removed_count} adjustments that failed recently\n")
 
         # Show report
         print(self.generate_report())
