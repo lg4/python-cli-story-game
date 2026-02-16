@@ -38,10 +38,11 @@ python main.py --test   # Run automated test
 ### CLI flags
 
 ```bash
-python main.py --test-all      # Test all themes (54 automated games)
-python main.py --seed 12345    # Replay with same seed
-python main.py --fast          # Skip text animations
-python main.py --no-log        # Don't create logs
+python main.py --tune           # Auto-tune (54 tests + analysis + cleanup)
+python main.py --test-all       # Test all themes (54 automated games)
+python main.py --seed 12345     # Replay with same seed
+python main.py --fast           # Skip text animations
+python main.py --no-log         # Don't create logs
 ```
 
 ---
@@ -65,7 +66,19 @@ python main.py --no-log        # Don't create logs
 
 ## Auto-Balancing System
 
-The game automatically learns from your gameplay:
+The game automatically learns from your gameplay. **One-step tuning:**
+
+```bash
+# Run complete tuning cycle in one command
+python main.py --tune
+# - Runs 54 comprehensive test scenarios
+# - Analyzes results automatically
+# - Applies optimal tuning parameters
+# - Cleans up temporary files
+# (Takes 2-3 minutes)
+```
+
+**Manual steps (if preferred):**
 
 ```bash
 # 1. Play games (logs auto-saved to logs/)
@@ -80,6 +93,8 @@ python game_tuner.py --apply
 # 4. Next game loads improved settings
 python main.py
 ```
+
+**Interactive menu:** On startup, press `2` when prompted to trigger auto-tuning without CLI flags.
 
 The auto-tuner adjusts:
 - Theme difficulty (supply amounts, damage taken)
