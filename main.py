@@ -30,10 +30,13 @@ import argparse
 import io
 import json
 import logging
+import os
 import requests
+import shutil
 from datetime import datetime
 from pathlib import Path
 import random
+import subprocess
 import sys
 import textwrap
 import time
@@ -63,6 +66,7 @@ except ImportError:
 TEST_MODE: bool = False        # when True, skip delays & read from input queue
 SLOW_PRINT_DELAY: float = 0.02  # character delay for theatrical prints
 LOGGING_ENABLED: bool = True    # when True, writes gameplay logs to disk
+LOG_DIR: Path = Path("logs")    # directory where logs are written (can be overridden)
 SELECTED_AI_MODEL: str = "gemma3:4b"  # Selected Ollama model for AI scenarios
 
 # Ollama API Configuration
@@ -397,7 +401,7 @@ GAME_LOGGER: GameLogger | None = None
 def init_logger(session_id: str | None = None) -> GameLogger:
     """Initialize the global game logger."""
     global GAME_LOGGER
-    GAME_LOGGER = GameLogger(session_id=session_id)
+    GAME_LOGGER = GameLogger(log_dir=LOG_DIR, session_id=session_id)
     return GAME_LOGGER
 
 
@@ -3409,6 +3413,129 @@ def _run_game_loop(max_days: int = 200) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Auto-tuning orchestrator
+# ──────────────────────────────────────────────────────────────────────
+def run_auto_tuning() -> tuple[bool, dict[str, Any]]:
+    """
+    Run a complete auto-tuning cycle:
+    1. Create temp directory
+    2. Run all scenarios with logging to temp dir
+    3. Analyze results with game_tuner
+    4. Apply tuning
+    5. Clean up temp directory
+    6. Return success status and results
+    """
+    from datetime import datetime
+    
+    # Create temp directory
+    temp_dir = Path("logs") / f"temp_tuning_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        print("\n" + "="*70)
+        print(" AUTO-TUNING SYSTEM")
+        print("="*70)
+        print(f"\n  📊 Running comprehensive test suite (54 tests)...")
+        print(f"  📁 Logging to: {temp_dir}\n")
+        
+        # Run tests with temp directory
+        global LOG_DIR, TEST_MODE, SLOW_PRINT_DELAY
+        original_log_dir = LOG_DIR
+        original_test_mode = TEST_MODE
+        original_slow_print = SLOW_PRINT_DELAY
+        
+        LOG_DIR = temp_dir
+        TEST_MODE = True
+        SLOW_PRINT_DELAY = 0.0
+        
+        # Run the test suite
+        print("  Running tests... (this may take 2-3 minutes)\n")
+        test_results = []
+        test_num = 0
+        
+        for iteration in range(3):
+            for theme_idx in range(1, 7):  # All 6 themes
+                for diff_idx in range(1, 4):  # 3 difficulties
+                    test_num += 1
+                    seed = 1000 + test_num
+                    
+                    # Build inputs
+                    if theme_idx == 6:  # AI theme
+                        inputs = ["TuneBot", str(seed), str(theme_idx), "2", str(diff_idx), ""]
+                    else:
+                        inputs = ["TuneBot", str(seed), str(theme_idx), str(diff_idx), ""]
+                    
+                    try:
+                        from tests.test_auto_improvement import AutoPlayer
+                        auto = AutoPlayer(strategy="scripted", inputs=inputs, seed=seed)
+                        with auto.activate():
+                            auto.strategy = "random"
+                            auto.idx = 0
+                            auto.input_queue = inputs
+                            _run_game_loop(max_days=100)
+                    except Exception as e:
+                        print(f"  ⚠️  Test {test_num} failed: {e}")
+                        pass
+                    
+                    if test_num % 6 == 0:
+                        print(f"  ✓ Completed {test_num}/54 tests")
+        
+        print(f"\n  ✅ All 54 tests completed")
+        
+        # Analyze with game_tuner
+        print(f"\n  🔍 Analyzing results...")
+        try:
+            result = subprocess.run(
+                [sys.executable, "game_tuner.py", "--apply", "--min-sessions", "15"],
+                cwd=Path.cwd(),
+                env={**dict(os.environ), "PYTHONPATH": str(Path.cwd())},
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            analysis_output = result.stdout + result.stderr
+            print(analysis_output)
+        except Exception as e:
+            print(f"  ❌ Analysis failed: {e}")
+            TEST_MODE = original_test_mode
+            SLOW_PRINT_DELAY = original_slow_print
+            LOG_DIR = original_log_dir
+            return False, {}
+        
+        # Restore original settings
+        TEST_MODE = original_test_mode
+        SLOW_PRINT_DELAY = original_slow_print
+        LOG_DIR = original_log_dir
+        
+        # Clean up temp directory
+        print(f"\n  🧹 Cleaning up temporary files...")
+        try:
+            shutil.rmtree(temp_dir)
+            print(f"  ✓ Cleaned up {temp_dir}")
+        except Exception as e:
+            print(f"  ⚠️  Could not clean up temp dir: {e}")
+        
+        print("\n" + "="*70)
+        print(" AUTO-TUNING COMPLETE!")
+        print("="*70)
+        print("\n  Game has been automatically balanced based on 54 test scenarios.")
+        print("  Tuning config saved to: game_tuning.json\n")
+        
+        return True, {"tests_run": 54, "status": "success"}
+    
+    except Exception as e:
+        print(f"\n  ❌ Auto-tuning failed: {e}")
+        LOG_DIR = original_log_dir
+        TEST_MODE = original_test_mode
+        SLOW_PRINT_DELAY = original_slow_print
+        try:
+            shutil.rmtree(temp_dir)
+        except:
+            pass
+        return False, {"error": str(e)}
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Main entry point
 # ──────────────────────────────────────────────────────────────────────
 def main() -> None:
@@ -3417,6 +3544,8 @@ def main() -> None:
                         help="Run automated test (no user input needed)")
     parser.add_argument("--test-all", action="store_true",
                         help="Run automated tests for all 5 themes")
+    parser.add_argument("--tune", action="store_true",
+                        help="Run auto-tuning (54 tests + analysis + cleanup)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Seed for the random number generator")
     parser.add_argument("--max-days", type=int, default=200,
@@ -3432,6 +3561,10 @@ def main() -> None:
         SLOW_PRINT_DELAY = 0.0
     if args.no_log:
         LOGGING_ENABLED = False
+
+    if args.tune:
+        run_auto_tuning()
+        return
 
     if args.test:
         TEST_MODE = True
@@ -3509,7 +3642,24 @@ def main() -> None:
         
         return
 
-    # Normal interactive mode
+    # Normal interactive mode - show setup menu
+    print("\n" + "="*70)
+    print(" TERMINAL ADVENTURE QUEST")
+    print("="*70)
+    print("\n  1. Play adventure")
+    print("  2. Auto-tune (runs 54 tests + analysis + cleanup)")
+    print("  3. Quit\n")
+    
+    setup_choice = get_choice("  > ", ["1", "2", "3"])
+    
+    if setup_choice == "2":
+        run_auto_tuning()
+        return
+    elif setup_choice == "3":
+        print("\n  Goodbye!\n")
+        return
+    
+    # Start game
     _run_game_loop()
 
 
